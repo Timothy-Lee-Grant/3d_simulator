@@ -7,6 +7,7 @@ import Buildings from './components/Buildings'
 import Trees    from './components/Trees'
 import Rocks    from './components/Rocks'
 import Landmark from './components/Landmark'
+import Human    from './components/Human'
 import Overlay  from './components/Overlay'
 
 /**
@@ -84,6 +85,12 @@ export default function App() {
         <Trees />
         <Rocks />
         <Landmark />
+
+        {/* ── Characters ────────────────────────────────────────────── */}
+        {/* Facing the player (rotated π around Y so their face is toward +Z) */}
+        <Human position={[0,   0, -5]} rotation={[0, Math.PI, 0]} />
+        <Human position={[2.5, 0, -7]} rotation={[0, Math.PI * 1.3, 0]} />
+        <Human position={[-2,  0, -6]} rotation={[0, Math.PI * 0.8, 0]} />
 
         {/* ── Canvas/DOM bridge ─────────────────────────────────────── */}
         <LockBridge onReady={handleReady} />
