@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>3D Explorer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #000; font-family: monospace; }
+    canvas { display: block; }
+
+    /* Crosshair */
+    #crosshair {
+      position: fixed;
+      top: 50%; left: 50%;
+      transform: translate(-50%, -50%);
+      width: 24px; height: 24px;
+      pointer-events: none;
+      z-index: 10;
+    }
+    #crosshair::before, #crosshair::after {
+      content: '';
+      position: absolute;
+      background: rgba(255, 255, 255, 0.85);
+      border-radius: 2px;
+    }
+    #crosshair::before { width: 2px; height: 100%; left: 50%; transform: translateX(-50%); }
+    #crosshair::after  { width: 100%; height: 2px; top: 50%;  transform: translateY(-50%); }
+
+    /* HUD */
+    #hud {
+      position: fixed;
+      bottom: 24px; left: 50%;
+      transform: translateX(-50%);
+      color: rgba(255,255,255,0.75);
+      font-size: 13px;
+      letter-spacing: 0.05em;
+      text-shadow: 0 1px 4px rgba(0,0,0,0.9);
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    /* Start overlay */
+    #overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.78);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      z-index: 20;
+      gap: 12px;
+    }
+    #overlay h1 { font-size: 38px; color: #fff; letter-spacing: 0.05em; }
+    #overlay .sub { font-size: 15px; color: rgba(255,255,255,0.65); }
+    #overlay .keys {
+      margin-top: 10px;
+      display: grid;
+      grid-template-columns: repeat(2, auto);
+      gap: 6px 24px;
+      color: rgba(255,255,255,0.55);
+      font-size: 13px;
+    }
+    #overlay .keys span { color: rgba(255,255,255,0.85); }
+    #overlay .cta {
+      margin-top: 20px;
+      padding: 10px 28px;
+      border: 2px solid rgba(255,255,255,0.4);
+      border-radius: 6px;
+      color: #fff;
+      font-size: 15px;
+      letter-spacing: 0.05em;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="overlay">
+    <h1>3D Explorer</h1>
+    <div class="sub">A first-person world built with Three.js</div>
+    <div class="keys">
+      <div><span>W A S D</span> — Move</div>
+      <div><span>Mouse</span> — Look around</div>
+      <div><span>Shift</span> — Sprint</div>
+      <div><span>ESC</span> — Pause</div>
+    </div>
+    <div class="cta">Click anywhere to start</div>
+  </div>
+
+  <div id="crosshair"></div>
+  <div id="hud">W A S D &nbsp;·&nbsp; Move &nbsp;|&nbsp; Mouse &nbsp;·&nbsp; Look &nbsp;|&nbsp; Shift &nbsp;·&nbsp; Sprint &nbsp;|&nbsp; ESC &nbsp;·&nbsp; Pause</div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+  <script>
+    // ─────────────────────────────────────────
+    //  SCENE
+    // ─────────────────────────────────────────
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x87CEEB);
+    scene.fog = new THREE.FogExp2(0x87CEEB, 0.018);
+
+    // ─────────────────────────────────────────
+    //  CAMERA  (player eyes at 1.7 m)
+    // ─────────────────────────────────────────
+    const camera = new THREE.PerspectiveCamera(
+      75, window.innerWidth / window.innerHeight, 0.1, 500
+    );
+    camera.position.set(0, 1.7, 0);
+
+    // ─────────────────────────────────────────
+    //  RENDERER
+    // ─────────────────────────────────────────
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    document.body.appendChild(renderer.domElement);
+
+    // ─────────────────────────────────────────
+    //  LIGHTING
+    // ─────────────────────────────────────────
+    scene.add(new THREE.AmbientLight(0xffeedd, 0.45));
+
+    const sun = new THREE.DirectionalLight(0xfff5e0, 1.1);
+    sun.position.set(60, 90, 40);
+    sun.castShadow = true;
+    sun.shadow.mapSize.set(2048, 2048);
+    sun.shadow.camera.near = 1;
+    sun.shadow.camera.far  = 250;
+    sun.shadow.camera.left = sun.shadow.camera.bottom = -60;
+    sun.shadow.camera.right = sun.shadow.camera.top  =  60;
+    scene.add(sun);
+
+    // Hemisphere sky/ground fill
+    scene.add(new THREE.HemisphereLight(0x87CEEB, 0x4a7c45, 0.35));
+
+    // ─────────────────────────────────────────
+    //  GROUND
+    // ─────────────────────────────────────────
+    const groundMat = new THREE.MeshLambertMaterial({ color: 0x4a7c45 });
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(300, 300), groundMat);
+    ground.rotation.x = -Math.PI / 2;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // Ground grid lines (subtle)
+    const grid = new THREE.GridHelper(300, 60, 0x3a6c35, 0x3a6c35);
+    grid.material.opacity = 0.18;
+    grid.material.transparent = true;
+    scene.add(grid);
+
+    // ─────────────────────────────────────────
+    //  HELPERS
+    // ─────────────────────────────────────────
+    function box(x, z, w, h, d, color) {
+      const mesh = new THREE.Mesh(
+        new THREE.BoxGeometry(w, h, d),
+        new THREE.MeshLambertMaterial({ color })
+      );
+      mesh.position.set(x, h / 2, z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      scene.add(mesh);
+      return mesh;
+    }
+
+    function sphere(x, z, r, color) {
+      const mesh = new THREE.Mesh(
+        new THREE.SphereGeometry(r, 10, 7),
+        new THREE.MeshLambertMaterial({ color })
+      );
+      mesh.position.set(x, r, z);
+      mesh.castShadow = true;
+      scene.add(mesh);
+    }
+
+    function cylinder(x, z, r, h, color) {
+      const mesh = new THREE.Mesh(
+        new THREE.CylinderGeometry(r, r, h, 10),
+        new THREE.MeshLambertMaterial({ color })
+      );
+      mesh.position.set(x, h / 2, z);
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+      scene.add(mesh);
+    }
+
+    // ─────────────────────────────────────────
+    //  ENVIRONMENT — buildings, trees, rocks
+    // ─────────────────────────────────────────
+
+    // Near buildings (visible from start)
+    box( -5, -10,  3, 6, 3, 0x8B6355);   // terracotta block
+    box(  6, -9,   4, 4, 4, 0x6B8E9F);   // slate-blue block
+    box( -9, -16,  2, 9, 2, 0xD4A373);   // tan tower
+    box( 10, -5,   5, 3, 3, 0x7B9E87);   // sage block
+    box( -3, -22,  6, 5, 4, 0xB87333);   // copper block
+    box( 16, -12,  3, 8, 3, 0x9B7B9B);   // mauve tower
+    box(-15, -8,   4, 4, 5, 0xC4956A);   // sandy block
+
+    // Mid-range
+    box(  3, -28,  7, 3, 5, 0x778899);   // steel-blue slab
+    box(-11, -26,  3, 6, 3, 0x8FBC8F);   // sea-green
+    box( 21, -20,  4, 7, 4, 0xCD853F);   // peru tower
+    box(-21, -22,  5, 4, 3, 0x708090);   // slate
+    box(  9, -33,  3, 9, 3, 0xDEB887);   // burlywood spire
+    box(-18, -35,  6, 5, 6, 0x6495ED);   // cornflower block
+    box( 28, -10,  4, 5, 4, 0xBC8F8F);   // rosy-brown
+    box(-28, -12,  3, 7, 3, 0x8B4513);   // saddle-brown tower
+    box( 14, -38,  5, 6, 4, 0x5F9EA0);   // cadet blue
+
+    // Small rocks
+    sphere(  3, -4,  0.45, 0x888888);
+    sphere( -2, -3,  0.6,  0x777777);
+    sphere(  7, -4,  0.35, 0x999999);
+    sphere(-13, -5,  0.55, 0x8a8a8a);
+    sphere( 11, -13, 0.4,  0x707070);
+
+    // Trees (cylinder trunk + sphere canopy)
+    [[4,-6],[−7,-13],[12,-18],[−5,-28],[20,-8],[−25,-18],[6,-35],[−14,-40]].forEach(([x,z]) => {
+      cylinder(x, z, 0.2, 1.8, 0x6B4423);
+      sphere(x, z - 0.5, 1.1, 0x2E7D32);
+      sphere(x + 0.4, z - 0.8, 0.9, 0x388E3C);
+    });
+
+    // Distant landmark — a tall obelisk
+    box(0, -50, 2, 14, 2, 0xd4c5b0);
+    box(0, -50, 1, 17, 1, 0xc8b89a);
+
+    // ─────────────────────────────────────────
+    //  POINTER LOCK (mouse look)
+    // ─────────────────────────────────────────
+    const overlay  = document.getElementById('overlay');
+    const euler    = new THREE.Euler(0, 0, 0, 'YXZ');
+    const PI_2     = Math.PI / 2;
+    let isLocked   = false;
+
+    overlay.addEventListener('click', () => {
+      renderer.domElement.requestPointerLock();
+    });
+
+    document.addEventListener('pointerlockchange', () => {
+      isLocked = document.pointerLockElement === renderer.domElement;
+      overlay.style.display = isLocked ? 'none' : 'flex';
+    });
+
+    document.addEventListener('mousemove', (e) => {
+      if (!isLocked) return;
+      euler.setFromQuaternion(camera.quaternion);
+      euler.y -= e.movementX * 0.0022;
+      euler.x -= e.movementY * 0.0022;
+      euler.x  = Math.max(-PI_2 + 0.01, Math.min(PI_2 - 0.01, euler.x));
+      camera.quaternion.setFromEuler(euler);
+    });
+
+    // ─────────────────────────────────────────
+    //  KEYBOARD
+    // ─────────────────────────────────────────
+    const keys = {};
+    document.addEventListener('keydown', e => { keys[e.code] = true; });
+    document.addEventListener('keyup',   e => { keys[e.code] = false; });
+
+    // ─────────────────────────────────────────
+    //  MOVEMENT
+    // ─────────────────────────────────────────
+    const WALK_SPEED   = 7.0;
+    const SPRINT_SPEED = 14.0;
+    const EYE_HEIGHT   = 1.7;
+
+    // Head-bob state
+    let bobTime  = 0;
+    let isMoving = false;
+
+    const moveDir = new THREE.Vector3();
+    const clock   = new THREE.Clock();
+
+    function update(delta) {
+      if (!isLocked) return;
+
+      const fwd  = (keys['KeyW'] || keys['ArrowUp'])    ? 1 : 0;
+      const back = (keys['KeyS'] || keys['ArrowDown'])  ? 1 : 0;
+      const left = (keys['KeyA'] || keys['ArrowLeft'])  ? 1 : 0;
+      const rght = (keys['KeyD'] || keys['ArrowRight']) ? 1 : 0;
+      const sprint = keys['ShiftLeft'] || keys['ShiftRight'];
+
+      moveDir.set(rght - left, 0, back - fwd);
+      isMoving = moveDir.length() > 0;
+
+      if (isMoving) {
+        moveDir.normalize();
+        const speed = sprint ? SPRINT_SPEED : WALK_SPEED;
+        camera.translateX(moveDir.x * speed * delta);
+        camera.translateZ(moveDir.z * speed * delta);
+      }
+
+      // Head bob
+      if (isMoving) {
+        const freq = sprint ? 12 : 7;
+        bobTime += delta * freq;
+        camera.position.y = EYE_HEIGHT + Math.sin(bobTime) * 0.045;
+      } else {
+        bobTime = 0;
+        camera.position.y += (EYE_HEIGHT - camera.position.y) * 0.15;
+      }
+
+      // World boundary
+      camera.position.x = Math.max(-120, Math.min(120, camera.position.x));
+      camera.position.z = Math.max(-120, Math.min(120, camera.position.z));
+    }
+
+    // ─────────────────────────────────────────
+    //  RESIZE
+    // ─────────────────────────────────────────
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ─────────────────────────────────────────
+    //  GAME LOOP
+    // ─────────────────────────────────────────
+    function animate() {
+      requestAnimationFrame(animate);
+      update(clock.getDelta());
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>
