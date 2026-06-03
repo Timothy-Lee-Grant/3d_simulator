@@ -1,0 +1,74 @@
+import { useRef } from 'react'
+import { useFrame, useThree } from '@react-three/fiber'
+import { PointerLockControls } from '@react-three/drei'
+import { Vector3 } from 'three'
+import useKeyboard from '../hooks/useKeyboard'
+
+const WALK_SPEED  = 7.0
+const SPRINT_SPEED = 14.0
+const EYE_HEIGHT  = 1.7
+const BOB_WALK_FREQ   = 7
+const BOB_SPRINT_FREQ = 12
+const BOB_AMPLITUDE   = 0.045
+
+/**
+ * Player — handles first-person camera movement and mouse look.
+ *
+ * PointerLockControls (from Drei) owns rotation: it captures the mouse
+ * and applies yaw/pitch to the camera on each mouse move event.
+ *
+ * useFrame owns translation: every frame we read the keyboard state and
+ * move the camera forward/back/left/right in its own local space, so the
+ * player always moves in the direction they're facing.
+ */
+export default function Player({ onLock, onUnlock }) {
+  const { camera } = useThree()
+  const keys     = useKeyboard()
+  const isLocked = useRef(false)
+  const moveDir  = useRef(new Vector3())
+  const bobTime  = useRef(0)
+
+  const handleLock   = () => { isLocked.current = true;  onLock?.()   }
+  const handleUnlock = () => { isLocked.current = false; onUnlock?.() }
+
+  useFrame((_, delta) => {
+    if (!isLocked.current) return
+
+    // ── Read input ────────────────────────────────────────────────────
+    const fwd    = (keys.current['KeyW'] || keys.current['ArrowUp'])    ? 1 : 0
+    const back   = (keys.current['KeyS'] || keys.current['ArrowDown'])  ? 1 : 0
+    const left   = (keys.current['KeyA'] || keys.current['ArrowLeft'])  ? 1 : 0
+    const right  = (keys.current['KeyD'] || keys.current['ArrowRight']) ? 1 : 0
+    const sprint = keys.current['ShiftLeft'] || keys.current['ShiftRight']
+
+    // ── Translate in camera-local space ───────────────────────────────
+    moveDir.current.set(right - left, 0, back - fwd)
+    const moving = moveDir.current.lengthSq() > 0
+
+    if (moving) {
+      moveDir.current.normalize()
+      const speed = sprint ? SPRINT_SPEED : WALK_SPEED
+      camera.translateX(moveDir.current.x * speed * delta)
+      camera.translateZ(moveDir.current.z * speed * delta)
+    }
+
+    // ── Head bob ──────────────────────────────────────────────────────
+    if (moving) {
+      const freq = sprint ? BOB_SPRINT_FREQ : BOB_WALK_FREQ
+      bobTime.current += delta * freq
+      camera.position.y = EYE_HEIGHT + Math.sin(bobTime.current) * BOB_AMPLITUDE
+    } else {
+      bobTime.current = 0
+      // Smoothly return to eye height when stopped
+      camera.position.y += (EYE_HEIGHT - camera.position.y) * 0.15
+    }
+
+    // ── World boundary ────────────────────────────────────────────────
+    camera.position.x = Math.max(-120, Math.min(120, camera.position.x))
+    camera.position.z = Math.max(-120, Math.min(120, camera.position.z))
+  })
+
+  return (
+    <PointerLockControls onLock={handleLock} onUnlock={handleUnlock} />
+  )
+}
