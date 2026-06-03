@@ -1,4 +1,4 @@
-import { useRef } from 'react'
+import { useRef, useEffect } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { PointerLockControls } from '@react-three/drei'
 import { Vector3 } from 'three'
@@ -30,6 +30,31 @@ export default function Player({ onLock, onUnlock }) {
 
   const handleLock   = () => { isLocked.current = true;  onLock?.()   }
   const handleUnlock = () => { isLocked.current = false; onUnlock?.() }
+
+  // ── Release lock when user leaves the browser window ─────────────────
+  // The Pointer Lock API captures the mouse even when the physical cursor
+  // moves outside the browser window. Without this, the user is trapped —
+  // they cannot click browser chrome, other apps, or their OS taskbar.
+  //
+  // Two events cover all exit paths:
+  //   • 'blur'             — window lost focus (Alt+Tab, clicked another app,
+  //                          clicked the OS taskbar/dock)
+  //   • 'visibilitychange' — tab hidden (switched tabs, minimised browser)
+  useEffect(() => {
+    const release = () => {
+      if (document.pointerLockElement) {
+        document.exitPointerLock()
+      }
+    }
+
+    window.addEventListener('blur', release)
+    document.addEventListener('visibilitychange', release)
+
+    return () => {
+      window.removeEventListener('blur', release)
+      document.removeEventListener('visibilitychange', release)
+    }
+  }, [])
 
   useFrame((_, delta) => {
     if (!isLocked.current) return

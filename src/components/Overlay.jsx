@@ -28,6 +28,9 @@ export default function Overlay({ locked, onStart }) {
           </div>
 
           <div style={styles.cta}>Click anywhere to start</div>
+          <p style={styles.escNote}>
+            Press <strong>ESC</strong> at any time to release the mouse and return to your browser
+          </p>
         </div>
       )}
 
@@ -109,6 +112,14 @@ const styles = {
     width: '100%',
     height: '100%',
     // drawn via ::before / ::after would need a className — use a Box approach instead
+  },
+  escNote: {
+    marginTop: '10px',
+    fontSize: '12px',
+    color: 'rgba(255,255,255,0.35)',
+    textAlign: 'center',
+    maxWidth: '300px',
+    lineHeight: '1.5',
   },
   hud: {
     position: 'fixed',
