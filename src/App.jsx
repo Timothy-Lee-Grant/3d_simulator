@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { Canvas, useThree } from '@react-three/fiber'
+import useAudio from './hooks/useAudio'
 
 import Player   from './components/Player'
 import World    from './components/World'
@@ -30,8 +31,11 @@ function LockBridge({ onReady }) {
 }
 
 export default function App() {
-  const [locked, setLocked]   = useState(false)
+  const [locked, setLocked] = useState(false)
   const lockFn = useRef(null)
+
+  // Initialize audio system the moment the player first locks in
+  useAudio(locked)
 
   // Called by LockBridge once the canvas is mounted
   const handleReady = useCallback((fn) => {

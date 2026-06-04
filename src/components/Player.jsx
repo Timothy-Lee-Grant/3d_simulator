@@ -3,6 +3,7 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { PointerLockControls } from '@react-three/drei'
 import { Vector3 } from 'three'
 import useKeyboard from '../hooks/useKeyboard'
+import { playFootstep } from '../systems/AudioManager'
 
 const WALK_SPEED  = 7.0
 const SPRINT_SPEED = 14.0
@@ -24,9 +25,17 @@ const BOB_AMPLITUDE   = 0.045
 export default function Player({ onLock, onUnlock }) {
   const { camera } = useThree()
   const keys     = useKeyboard()
-  const isLocked = useRef(false)
-  const moveDir  = useRef(new Vector3())
-  const bobTime  = useRef(0)
+  const isLocked  = useRef(false)
+  const moveDir   = useRef(new Vector3())
+  const bobTime   = useRef(0)
+
+  // ── Footstep state ────────────────────────────────────────────────────
+  // We detect footsteps by watching the sign of Math.sin(bobTime).
+  // The sine wave completes one full cycle per stride (two steps).
+  // Each time the wave crosses zero — once going down, once going up —
+  // that's one footstep. This perfectly syncs audio to the visual bob.
+  const prevSinVal = useRef(0)
+  const stepFoot   = useRef('left')   // alternates L/R for future directional audio
 
   const handleLock   = () => { isLocked.current = true;  onLock?.()   }
   const handleUnlock = () => { isLocked.current = false; onUnlock?.() }
@@ -84,8 +93,32 @@ export default function Player({ onLock, onUnlock }) {
       camera.position.y = EYE_HEIGHT + Math.sin(bobTime.current) * BOB_AMPLITUDE
     } else {
       bobTime.current = 0
+      prevSinVal.current = 0   // reset so next movement starts cleanly
       // Smoothly return to eye height when stopped
       camera.position.y += (EYE_HEIGHT - camera.position.y) * 0.15
+    }
+
+    // ── Footstep audio ────────────────────────────────────────────────
+    // Detect every zero-crossing of sin(bobTime).
+    // The sine wave has two zero crossings per cycle:
+    //   positive → negative crossing: one foot hits the ground
+    //   negative → positive crossing: other foot hits the ground
+    // This gives exactly two footstep sounds per full bob cycle,
+    // perfectly synchronized with the up-down camera motion.
+    if (moving) {
+      const sinNow = Math.sin(bobTime.current)
+      const sinWas = prevSinVal.current
+
+      const crossedDown = sinWas >= 0 && sinNow < 0   // + → −
+      const crossedUp   = sinWas <  0 && sinNow >= 0  // − → +
+
+      if (crossedDown || crossedUp) {
+        const vol = sprint ? 0.55 : 0.35
+        playFootstep('grass', vol)
+        stepFoot.current = stepFoot.current === 'left' ? 'right' : 'left'
+      }
+
+      prevSinVal.current = sinNow
     }
 
     // ── World boundary ────────────────────────────────────────────────
