@@ -3,15 +3,16 @@ import { Canvas, useThree } from '@react-three/fiber'
 import { Sky, Environment } from '@react-three/drei'
 import useAudio from './hooks/useAudio'
 
-import Player      from './components/Player'
-import World       from './components/World'
-import Buildings   from './components/Buildings'
-import Trees       from './components/Trees'
-import Rocks       from './components/Rocks'
-import Landmark    from './components/Landmark'
-import Human       from './components/Human'
-import StreetLamps from './components/StreetLamps'
-import Overlay     from './components/Overlay'
+import Player         from './components/Player'
+import World          from './components/World'
+import Buildings      from './components/Buildings'
+import Trees          from './components/Trees'
+import Rocks          from './components/Rocks'
+import Landmark       from './components/Landmark'
+import Human          from './components/Human'
+import StreetLamps    from './components/StreetLamps'
+import PostProcessing from './components/PostProcessing'
+import Overlay        from './components/Overlay'
 
 // Sun direction shared between the sky shader and the directional light.
 // They must match — if the visible sun in the sky is north-east at high noon,
@@ -131,6 +132,13 @@ export default function App() {
         <Human position={[0,   0, -5]} rotation={[0, Math.PI,       0]} phaseOffset={0.0} />
         <Human position={[2.5, 0, -7]} rotation={[0, Math.PI * 1.3, 0]} phaseOffset={2.1} />
         <Human position={[-2,  0, -6]} rotation={[0, Math.PI * 0.8, 0]} phaseOffset={4.7} />
+
+        {/* ── Post-processing ───────────────────────────────────────── */}
+        {/* Must come last inside Canvas so it captures the fully-lit scene.
+            EffectComposer intercepts the render pipeline and applies screen-space
+            effects: SMAA (anti-aliasing), Bloom (glow), Vignette (edge darkening).
+            See PostProcessing.jsx for per-effect tuning notes. */}
+        <PostProcessing />
 
         {/* ── Canvas/DOM bridge ─────────────────────────────────────── */}
         <LockBridge onReady={handleReady} />

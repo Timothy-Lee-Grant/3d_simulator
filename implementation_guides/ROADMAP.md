@@ -39,7 +39,7 @@
 | No interactivity | Cannot click, inspect, or interact with anything in the scene |
 | No state management | No health, no inventory, no game logic |
 | No level system | All scene objects hardcoded directly in `App.jsx` |
-| No post-processing | Flat, unfiltered render output |
+| ~~No post-processing~~ | ~~Flat, unfiltered render output~~ — **done: Bloom, SMAA, Vignette** |
 | Separate draw calls per object | 30+ meshes in one human × 3 humans = ~90 draw calls just for NPCs |
 | No LOD | Far objects render at same polygon count as nearby objects |
 | No performance monitor | No way to know if frame rate is suffering |
@@ -289,7 +289,7 @@ useFrame(({ clock }) => {
 
 ---
 
-### 2.4 Post-Processing Effects
+### 2.4 Post-Processing Effects ✅
 
 **What you'll learn:** The rendering pipeline after the scene is drawn, screen-space effects, the EffectComposer pattern.
 
