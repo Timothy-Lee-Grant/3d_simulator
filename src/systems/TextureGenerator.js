@@ -129,6 +129,40 @@ function makeAlbedo(w, h, drawFn) {
 }
 
 /**
+ * Generates a roughness map from a scalar roughness function.
+ *
+ * Three.js MeshStandardMaterial reads the GREEN channel of roughnessMap
+ * and multiplies it by material.roughness to get the final per-pixel value.
+ * We output grayscale (R = G = B) so the green channel carries the right value.
+ *
+ * Convention: 0 = perfectly smooth (mirror), 1 = fully diffuse/matte.
+ *
+ * @param {number} size
+ * @param {function} roughnessFn  (px, py, size) → float 0–1
+ */
+function makeRoughness(size, roughnessFn) {
+  const canvas = document.createElement('canvas')
+  canvas.width = canvas.height = size
+  const ctx = canvas.getContext('2d')
+  const img = ctx.createImageData(size, size)
+  const d = img.data
+
+  for (let py = 0; py < size; py++) {
+    for (let px = 0; px < size; px++) {
+      const v = Math.round(roughnessFn(px, py, size) * 255)
+      const i = (py * size + px) * 4
+      d[i] = d[i + 1] = d[i + 2] = v   // grayscale — green channel = roughness value
+      d[i + 3] = 255
+    }
+  }
+
+  ctx.putImageData(img, 0, 0)
+  const tex = new THREE.CanvasTexture(canvas)
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+  return tex
+}
+
+/**
  * Generates a normal map from a scalar height function.
  * @param {number} size  Both width and height (must be square)
  * @param {function} heightAt  (px, py, size) → float 0–1  (0 = depressed, 1 = raised)
@@ -430,25 +464,52 @@ function drawStone(ctx, w, h) {
   }
 }
 
+// ── Roughness functions ───────────────────────────────────────────────────
+//
+// Output: 0.0 = mirror-smooth, 1.0 = fully matte/diffuse.
+//
+// Brick: fired clay face ~0.72 (slightly glazed), granular mortar ~0.96.
+// Concrete: mostly rough (0.87–0.95) with aggregate variation.
+// Stone: slightly smoother face (0.78–0.88), very rough joints.
+
+function brickRoughness(px, py, _size) {
+  if (inMortar(px, py)) return 0.96
+  // Subtle per-brick variation using a coarse hash grid
+  return 0.70 + hash(Math.floor(px / 20), Math.floor(py / 20)) * 0.08
+}
+
+function concreteRoughness(px, py, size) {
+  return 0.87 + fbm(px / size * 8, py / size * 8, 2) * 0.08
+}
+
+function stoneRoughness(px, py, size) {
+  const { localX, localY } = stoneLocalCoords(px, py)
+  const inJoint = localX < ST_M || localX > ST_W - ST_M ||
+                  localY < ST_M || localY > ST_H - ST_M
+  if (inJoint) return 0.96
+  return 0.78 + fbm(px / size * 10, py / size * 10, 2) * 0.10
+}
+
 // ── Public API ────────────────────────────────────────────────────────────
 
 const TEXTURE_DEFS = {
-  brick:    { size: 512, drawFn: drawBrick,    heightFn: brickHeight,    normalStrength: 8  },
-  concrete: { size: 512, drawFn: drawConcrete, heightFn: concreteHeight, normalStrength: 3  },
-  plaster:  { size: 512, drawFn: drawPlaster,  heightFn: plasterHeight,  normalStrength: 2  },
-  grass:    { size: 512, drawFn: drawGrass,    heightFn: null,           normalStrength: 0  },
-  bark:     { size: 256, drawFn: drawBark,     heightFn: barkHeight,     normalStrength: 5  },
-  leaves:   { size: 256, drawFn: drawLeaves,   heightFn: null,           normalStrength: 0  },
-  stone:    { size: 512, drawFn: drawStone,    heightFn: stoneHeight,    normalStrength: 7  },
+  brick:    { size: 512, drawFn: drawBrick,    heightFn: brickHeight,    normalStrength: 8, roughnessFn: brickRoughness    },
+  concrete: { size: 512, drawFn: drawConcrete, heightFn: concreteHeight, normalStrength: 3, roughnessFn: concreteRoughness },
+  plaster:  { size: 512, drawFn: drawPlaster,  heightFn: plasterHeight,  normalStrength: 2, roughnessFn: null              },
+  grass:    { size: 512, drawFn: drawGrass,    heightFn: null,           normalStrength: 0, roughnessFn: null              },
+  bark:     { size: 256, drawFn: drawBark,     heightFn: barkHeight,     normalStrength: 5, roughnessFn: null              },
+  leaves:   { size: 256, drawFn: drawLeaves,   heightFn: null,           normalStrength: 0, roughnessFn: null              },
+  stone:    { size: 512, drawFn: drawStone,    heightFn: stoneHeight,    normalStrength: 7, roughnessFn: stoneRoughness    },
 }
 
 /**
- * Returns { albedo, normal } for the given texture key.
- * Both are THREE.CanvasTexture with RepeatWrapping set.
- * `normal` is null for textures that don't have a normal map defined.
- * Results are cached after first generation.
+ * Returns { albedo, normal, roughness } for the given texture key.
+ * All are THREE.CanvasTexture with RepeatWrapping set.
+ * `normal` and `roughness` are null when not defined for that surface type.
+ * Results are cached — each texture is generated exactly once per session.
  *
  * @param {'brick'|'concrete'|'plaster'|'grass'|'bark'|'leaves'|'stone'} key
+ * @returns {{ albedo: THREE.CanvasTexture, normal: THREE.CanvasTexture|null, roughness: THREE.CanvasTexture|null }}
  */
 export function getTexture(key) {
   if (cache.has(key)) return cache.get(key)
@@ -462,7 +523,11 @@ export function getTexture(key) {
     ? makeNormal(def.size, def.heightFn, def.normalStrength)
     : null
 
-  const entry = { albedo, normal }
+  const roughness = def.roughnessFn
+    ? makeRoughness(def.size, def.roughnessFn)
+    : null
+
+  const entry = { albedo, normal, roughness }
   cache.set(key, entry)
   return entry
 }
@@ -472,9 +537,10 @@ export function getTexture(key) {
  * Call this when the scene is torn down to free GPU memory.
  */
 export function disposeTextures() {
-  cache.forEach(({ albedo, normal }) => {
+  cache.forEach(({ albedo, normal, roughness }) => {
     albedo.dispose()
     normal?.dispose()
+    roughness?.dispose()
   })
   cache.clear()
 }
