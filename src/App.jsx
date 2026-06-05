@@ -11,6 +11,7 @@ import Rocks          from './components/Rocks'
 import Landmark       from './components/Landmark'
 import Human          from './components/Human'
 import StreetLamps    from './components/StreetLamps'
+import Particles      from './components/Particles'
 import PostProcessing from './components/PostProcessing'
 import Overlay        from './components/Overlay'
 
@@ -132,6 +133,12 @@ export default function App() {
         <Human position={[0,   0, -5]} rotation={[0, Math.PI,       0]} phaseOffset={0.0} />
         <Human position={[2.5, 0, -7]} rotation={[0, Math.PI * 1.3, 0]} phaseOffset={2.1} />
         <Human position={[-2,  0, -6]} rotation={[0, Math.PI * 0.8, 0]} phaseOffset={4.7} />
+
+        {/* ── Particles ─────────────────────────────────────────────── */}
+        {/* Ambient dust motes (BufferGeometry points, CPU-animated) and
+            warm sparkle halos at each street lamp (Drei Sparkles).
+            See Particles.jsx for the GPU buffer / draw-call explanation. */}
+        <Particles />
 
         {/* ── Post-processing ───────────────────────────────────────── */}
         {/* Must come last inside Canvas so it captures the fully-lit scene.

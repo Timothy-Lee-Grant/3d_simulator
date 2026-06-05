@@ -330,7 +330,7 @@ import { EffectComposer, Bloom, SSAO, Vignette, ChromaticAberration } from '@rea
 
 ---
 
-### 2.5 Particle Systems
+### 2.5 Particle Systems ✅
 
 **What you'll learn:** GPU-driven particles using `THREE.Points` and `THREE.BufferGeometry`, custom shaders for particle appearance, instanced rendering at the particle level.
 
