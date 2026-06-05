@@ -1,30 +1,64 @@
+import { useMemo } from 'react'
+import * as THREE from 'three'
+import { getTexture } from '../systems/TextureGenerator'
+
 /**
- * Rocks — scattered sphere boulders on the ground.
- * Each rock sits on the ground: position.y = radius.
+ * Rocks — sphere boulders on the ground.
+ *
+ * All rocks share a single stone material. Each rock's unique size and
+ * position comes from the ROCKS data array. The stone texture gives the
+ * surface weight and realism that a flat grey Lambert never could.
  */
 
 const ROCKS = [
-  { pos: [ 3,  -4], radius: 0.45, color: '#888888' },
-  { pos: [-2,  -3], radius: 0.60, color: '#777777' },
-  { pos: [ 7,  -4], radius: 0.35, color: '#999999' },
-  { pos: [-13, -5], radius: 0.55, color: '#8a8a8a' },
-  { pos: [11, -13], radius: 0.40, color: '#707070' },
+  { pos: [ 3,  -4],  radius: 0.45 },
+  { pos: [-2,  -3],  radius: 0.60 },
+  { pos: [ 7,  -4],  radius: 0.35 },
+  { pos: [-13, -5],  radius: 0.55 },
+  { pos: [11, -13],  radius: 0.40 },
 ]
 
-function Rock({ pos: [x, z], radius, color }) {
+function useRockMaterial() {
+  return useMemo(() => {
+    const { albedo, normal } = getTexture('stone')
+
+    const map = albedo.clone()
+    map.needsUpdate = true
+    map.repeat.set(2, 2)  // tile twice across the sphere's UV space
+
+    const mat = new THREE.MeshStandardMaterial({
+      map,
+      roughness: 0.88,
+      metalness: 0,
+    })
+
+    if (normal) {
+      const nrm = normal.clone()
+      nrm.needsUpdate = true
+      nrm.repeat.copy(map.repeat)
+      mat.normalMap = nrm
+      mat.normalScale.set(0.5, 0.5)
+    }
+
+    return mat
+  }, [])
+}
+
+function Rock({ pos: [x, z], radius, material }) {
   return (
-    <mesh position={[x, radius, z]} castShadow>
+    <mesh position={[x, radius, z]} castShadow material={material}>
       <sphereGeometry args={[radius, 10, 7]} />
-      <meshLambertMaterial color={color} />
     </mesh>
   )
 }
 
 export default function Rocks() {
+  const material = useRockMaterial()
+
   return (
     <group name="rocks">
       {ROCKS.map((r, i) => (
-        <Rock key={i} {...r} />
+        <Rock key={i} {...r} material={material} />
       ))}
     </group>
   )
