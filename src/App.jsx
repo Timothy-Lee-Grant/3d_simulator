@@ -126,9 +126,11 @@ export default function App() {
         <StreetLamps />
 
         {/* ── Characters ────────────────────────────────────────────── */}
-        <Human position={[0,   0, -5]} rotation={[0, Math.PI, 0]} />
-        <Human position={[2.5, 0, -7]} rotation={[0, Math.PI * 1.3, 0]} />
-        <Human position={[-2,  0, -6]} rotation={[0, Math.PI * 0.8, 0]} />
+        {/* Each human gets a different phaseOffset so their idle cycles
+            are staggered — they won't all inhale and sway in unison */}
+        <Human position={[0,   0, -5]} rotation={[0, Math.PI,       0]} phaseOffset={0.0} />
+        <Human position={[2.5, 0, -7]} rotation={[0, Math.PI * 1.3, 0]} phaseOffset={2.1} />
+        <Human position={[-2,  0, -6]} rotation={[0, Math.PI * 0.8, 0]} phaseOffset={4.7} />
 
         {/* ── Canvas/DOM bridge ─────────────────────────────────────── */}
         <LockBridge onReady={handleReady} />
