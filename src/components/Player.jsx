@@ -39,6 +39,8 @@ import { useInteractionStore } from '../store/useInteractionStore'
 import { useGameStore } from '../store/useGameStore'
 import { useWorldStore } from '../store/useWorldStore'
 
+const SLOT_COUNT = 5
+
 // ── Movement constants ────────────────────────────────────────────────────────
 const WALK_SPEED     = 7.0
 const SPRINT_SPEED   = 14.0
@@ -93,6 +95,7 @@ export default function Player({ onLock, onUnlock }) {
   // are created once and their reference never changes.
   const setStamina       = useGameStore(state => state.setStamina)
   const savePosition     = useGameStore(state => state.savePosition)
+  const equipSlot        = useGameStore(state => state.equipSlot)
   const addInteractedNPC = useWorldStore(state => state.addInteractedNPC)
 
   const handleLock   = () => { isLocked.current = true;  onLock?.()   }
@@ -110,6 +113,25 @@ export default function Player({ onLock, onUnlock }) {
       document.removeEventListener('visibilitychange', release)
     }
   }, [])
+
+  // ── Inventory slot hotkeys (1–5) ─────────────────────────────────────────
+  // Using a keydown event (not useFrame) because slot selection is a one-shot
+  // action — it fires once per press, not continuously. A keydown listener is
+  // cleaner than edge-detecting a key in useFrame for infrequent discrete events.
+  //
+  // Guarded by isLocked: the player shouldn't be switching slots while the
+  // start screen is up or while the mouse is unlocked (e.g., while in dialogue).
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (!isLocked.current) return
+      const slot = parseInt(e.key, 10) - 1      // '1' → 0, '2' → 1, etc.
+      if (slot >= 0 && slot < SLOT_COUNT) {
+        equipSlot(slot)
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [equipSlot])
 
   useFrame((_, delta) => {
     if (!isLocked.current) return

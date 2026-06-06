@@ -1,112 +1,479 @@
 /**
- * Overlay — the start screen and HUD.
+ * Overlay — start screen and full HUD.
  *
- * This is a regular React/DOM component, not a Three.js object.
- * It sits outside the Canvas and layers over the WebGL output via CSS.
+ * A pure React/DOM component layered over the WebGL canvas via CSS.
+ * Everything here is regular HTML + inline styles — no Three.js.
  *
- * ── What's new in 3.1 ─────────────────────────────────────────────────────
+ * ── HUD Layout (locked state) ─────────────────────────────────────────────
  *
- * Two new HUD elements driven by the interaction store:
+ *   [top-center]   Compass — cardinal direction strip, scrolls with camera
+ *   [top-left]     Health bar + Stamina bar + NPC met counter
+ *   [center]       Crosshair (turns blue when looking at an NPC)
+ *   [above center] Interaction prompt — "[ E ] Inspect Name"
+ *   [upper-center] Interaction feedback — "You greeted Name"
+ *   [bottom-center] Inventory quick bar — 5 slots, 1–5 to select
+ *   [very bottom]  Control hints
  *
- *   INTERACTION PROMPT — appears when the player looks at an NPC within range.
- *     Shows "[ E ]  Inspect <name>" just above the crosshair.
- *     Fades in/out with a CSS transition so it doesn't pop harshly.
+ * ── Compass bearing math ──────────────────────────────────────────────────
  *
- *   INTERACTION FEEDBACK — a brief message that appears when the player presses E.
- *     Shows "You greeted <name>" for 2 seconds, then disappears.
- *     Implemented with a useEffect that clears after a timeout.
+ * camera.rotation.y is Three.js yaw (radians). Convention:
+ *   yaw = 0  → facing -Z → we call this "North"
+ *   yaw > 0  → turning left  → West direction
+ *   yaw < 0  → turning right → East direction
  *
- * Both elements read from useInteractionStore — the same store that the raycaster
- * and Player component write to. No prop threading required.
+ * compassBearing = (−yaw × 180/π + 360) % 360
+ *   0°=N  90°=E  180°=S  270°=W
+ *
+ * Each compass marker is positioned relative to the visible 90° window:
+ *   diff = markerAngle − bearing   (normalized to −180…+180)
+ *   x    = HALF_WIDTH + diff × (COMPASS_WIDTH / COMPASS_FOV)
+ * Markers where |diff| > FOV/2 + padding are not rendered.
+ *
+ * ── Inventory slot system ─────────────────────────────────────────────────
+ *
+ * `equippedSlot` (0–4) lives in useGameStore. Player.jsx handles 1–5 keys
+ * and calls equipSlot(). The Overlay just reads and displays — it never
+ * writes to the store (display is read-only here).
+ *
+ * ── CSS transitions on bars ───────────────────────────────────────────────
+ *
+ * Bar fill widths are set via `width: ${pct}%` on an inline style. The
+ * CSS `transition: width 0.15s linear` property makes the bars animate
+ * smoothly even though React is just setting a new percentage value each
+ * time the component re-renders (at ~20Hz from the store sync).
  */
 
 import { useState, useEffect } from 'react'
 import { useInteractionStore } from '../store/useInteractionStore'
-import { useGameStore } from '../store/useGameStore'
-import { useWorldStore } from '../store/useWorldStore'
+import { useGameStore }        from '../store/useGameStore'
+import { useWorldStore }       from '../store/useWorldStore'
 
-// How long the interaction feedback message stays on screen (ms)
-const FEEDBACK_DURATION = 2000
+const FEEDBACK_DURATION = 2200   // ms before interaction message fades
+const COMPASS_WIDTH     = 200    // px — visible window of the compass strip
+const COMPASS_FOV       = 90     // degrees visible in the window
+const SLOT_COUNT        = 5
+
+// ── Compass ──────────────────────────────────────────────────────────────────
+
+const COMPASS_MARKERS = [
+  { label: 'N',  angle: 0   },
+  { label: 'NE', angle: 45  },
+  { label: 'E',  angle: 90  },
+  { label: 'SE', angle: 135 },
+  { label: 'S',  angle: 180 },
+  { label: 'SW', angle: 225 },
+  { label: 'W',  angle: 270 },
+  { label: 'NW', angle: 315 },
+]
+
+function Compass({ yaw }) {
+  // Convert Three.js camera yaw to compass bearing (0–360°, clockwise from North)
+  const bearing = ((-yaw * 180 / Math.PI) % 360 + 360) % 360
+
+  const half        = COMPASS_WIDTH / 2
+  const pxPerDegree = COMPASS_WIDTH / COMPASS_FOV
+  const cullPad     = 16   // px beyond the edge before a marker is removed
+
+  return (
+    <div style={cs.wrap}>
+      {/* Scrolling marker strip — clipped by parent overflow:hidden */}
+      <div style={cs.strip}>
+        {COMPASS_MARKERS.map(({ label, angle }) => {
+          // Angle of this marker relative to where the camera is facing.
+          // Normalized to −180…+180 so we can tell left vs right.
+          let diff = angle - bearing
+          if (diff >  180) diff -= 360
+          if (diff < -180) diff += 360
+
+          // Skip if fully outside the visible window
+          const x = half + diff * pxPerDegree
+          if (x < -cullPad || x > COMPASS_WIDTH + cullPad) return null
+
+          const isCardinal = label.length === 1
+          const isNorth    = label === 'N'
+
+          return (
+            <div key={label} style={{ ...cs.markerWrap, left: x }}>
+              {/* Tick line above the label */}
+              <div style={{
+                ...cs.tick,
+                height:     isCardinal ? 7 : 4,
+                width:      isCardinal ? 2 : 1,
+                background: isNorth ? '#f87171' : 'rgba(255,255,255,0.45)',
+              }} />
+              <span style={{
+                ...cs.markerLabel,
+                fontSize:   isCardinal ? '10px' : '8px',
+                color:      isNorth    ? '#f87171'
+                          : isCardinal ? 'rgba(255,255,255,0.9)'
+                                       : 'rgba(255,255,255,0.4)',
+                fontWeight: isCardinal ? 'bold' : 'normal',
+              }}>
+                {label}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Fixed center chevron — always points down at the current bearing */}
+      <div style={cs.centerMark} />
+    </div>
+  )
+}
+
+const cs = {
+  wrap: {
+    position:   'fixed',
+    top:        '18px',
+    left:       '50%',
+    transform:  'translateX(-50%)',
+    width:      COMPASS_WIDTH,
+    height:     34,
+    background: 'rgba(0,0,0,0.48)',
+    border:     '1px solid rgba(255,255,255,0.1)',
+    borderRadius: 5,
+    overflow:   'hidden',
+    pointerEvents: 'none',
+    zIndex:     10,
+  },
+  strip: {
+    position: 'relative',
+    width:    '100%',
+    height:   '100%',
+  },
+  markerWrap: {
+    position:       'absolute',
+    top:            5,
+    display:        'flex',
+    flexDirection:  'column',
+    alignItems:     'center',
+    gap:            2,
+    transform:      'translateX(-50%)',
+    fontFamily:     'monospace',
+  },
+  tick: {
+    borderRadius: 1,
+  },
+  markerLabel: {
+    lineHeight: 1,
+    userSelect: 'none',
+  },
+  centerMark: {
+    position:    'absolute',
+    bottom:      4,
+    left:        '50%',
+    transform:   'translateX(-50%)',
+    width:       0,
+    height:      0,
+    borderLeft:  '4px solid transparent',
+    borderRight: '4px solid transparent',
+    borderBottom:'5px solid rgba(255,255,255,0.7)',
+  },
+}
+
+// ── Stat bars (health + stamina) ─────────────────────────────────────────────
+
+function StatBars({ health, maxHealth, stamina, maxStamina, isExhausted, metCount }) {
+  const hpPct = Math.max(0, (health  / maxHealth)  * 100)
+  const stPct = Math.max(0, (stamina / maxStamina) * 100)
+
+  const hpColor = hpPct > 50 ? '#4ade80'   // green
+               :  hpPct > 25 ? '#fb923c'   // orange
+               :               '#f87171'   // red
+
+  const stColor = isExhausted ? '#7f1d1d' : '#3b82f6'  // dark-red or blue
+
+  return (
+    <div style={sb.container}>
+
+      {/* Health */}
+      <div style={sb.row}>
+        <span style={{ ...sb.icon, color: hpColor }}>♥</span>
+        <div style={sb.track}>
+          <div style={{ ...sb.fill, width: `${hpPct}%`, background: hpColor }} />
+          <div style={{ ...sb.glassSheen }} />
+        </div>
+        <span style={sb.value}>{Math.ceil(health)}</span>
+      </div>
+
+      {/* Stamina */}
+      <div style={sb.row}>
+        <span style={{ ...sb.icon, color: isExhausted ? '#ef4444' : '#60a5fa' }}>⚡</span>
+        <div style={sb.track}>
+          <div style={{ ...sb.fill, width: `${stPct}%`, background: stColor }} />
+          <div style={sb.glassSheen} />
+          {isExhausted && <span style={sb.exhaustedBadge}>EXHAUSTED</span>}
+        </div>
+        <span style={sb.value}>{Math.ceil(stamina)}</span>
+      </div>
+
+      {/* Met NPC counter */}
+      {metCount > 0 && (
+        <div style={sb.metRow}>
+          {'★'.repeat(metCount)}{'☆'.repeat(3 - metCount)}
+          <span style={sb.metLabel}> Met {metCount}/3</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const sb = {
+  container: {
+    position:      'fixed',
+    top:           64,    // below compass
+    left:          18,
+    display:       'flex',
+    flexDirection: 'column',
+    gap:           8,
+    pointerEvents: 'none',
+    zIndex:        10,
+    fontFamily:    'monospace',
+    userSelect:    'none',
+  },
+  row: {
+    display:     'flex',
+    alignItems:  'center',
+    gap:         7,
+  },
+  icon: {
+    fontSize:  13,
+    width:     14,
+    textAlign: 'center',
+    flexShrink: 0,
+    textShadow: '0 0 8px currentColor',
+  },
+  track: {
+    position:     'relative',
+    width:        170,
+    height:       10,
+    background:   'rgba(0,0,0,0.6)',
+    borderRadius: 4,
+    border:       '1px solid rgba(255,255,255,0.1)',
+    overflow:     'hidden',
+  },
+  fill: {
+    height:     '100%',
+    borderRadius: 4,
+    transition: 'width 0.12s linear, background 0.3s ease',
+  },
+  // Subtle glass sheen over the fill
+  glassSheen: {
+    position:   'absolute',
+    inset:      0,
+    background: 'linear-gradient(to bottom, rgba(255,255,255,0.08) 0%, transparent 60%)',
+    pointerEvents: 'none',
+  },
+  exhaustedBadge: {
+    position:    'absolute',
+    inset:       0,
+    display:     'flex',
+    alignItems:  'center',
+    justifyContent: 'center',
+    fontSize:    7,
+    letterSpacing: '0.1em',
+    color:       '#fca5a5',
+    fontFamily:  'monospace',
+    fontWeight:  'bold',
+  },
+  value: {
+    fontSize:  11,
+    color:     'rgba(255,255,255,0.5)',
+    minWidth:  28,
+    textAlign: 'right',
+  },
+  metRow: {
+    marginTop: 2,
+    fontSize:  11,
+    color:     'rgba(255,200,50,0.7)',
+    letterSpacing: '0.04em',
+  },
+  metLabel: {
+    color: 'rgba(136,204,255,0.65)',
+  },
+}
+
+// ── Inventory quick bar ───────────────────────────────────────────────────────
+
+function InventoryBar({ inventory, equippedSlot }) {
+  return (
+    <div style={inv.bar}>
+      {Array.from({ length: SLOT_COUNT }, (_, i) => {
+        const item     = inventory[i]
+        const isActive = i === equippedSlot
+
+        return (
+          <div key={i} style={{
+            ...inv.slot,
+            borderColor: isActive
+              ? 'rgba(255,255,255,0.85)'
+              : 'rgba(255,255,255,0.18)',
+            background: isActive
+              ? 'rgba(255,255,255,0.09)'
+              : 'rgba(0,0,0,0.52)',
+            boxShadow: isActive
+              ? '0 0 0 1px rgba(255,255,255,0.2), 0 0 12px rgba(255,255,255,0.15)'
+              : 'none',
+          }}>
+
+            {/* Slot number (top-right corner) */}
+            <span style={{
+              ...inv.keyHint,
+              color: isActive ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.3)',
+            }}>
+              {i + 1}
+            </span>
+
+            {/* Item icon + name (if slot is filled) */}
+            {item && (
+              <div style={inv.itemContent}>
+                <div style={{ ...inv.iconSwatch, background: item.color || '#666' }} />
+                <span style={{
+                  ...inv.itemName,
+                  color: isActive ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.5)',
+                }}>
+                  {/* First word only — keeps slots compact */}
+                  {item.name.split(' ')[0]}
+                </span>
+              </div>
+            )}
+
+            {/* Active slot bottom indicator */}
+            {isActive && <div style={inv.activeDot} />}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+const inv = {
+  bar: {
+    position:       'fixed',
+    bottom:         54,    // above HUD hints row
+    left:           '50%',
+    transform:      'translateX(-50%)',
+    display:        'flex',
+    gap:            5,
+    pointerEvents:  'none',
+    zIndex:         10,
+    userSelect:     'none',
+  },
+  slot: {
+    position:     'relative',
+    width:        54,
+    height:       54,
+    border:       '1.5px solid',
+    borderRadius: 6,
+    display:      'flex',
+    flexDirection: 'column',
+    alignItems:   'center',
+    justifyContent: 'center',
+    transition:   'border-color 0.1s ease, background 0.1s ease, box-shadow 0.1s ease',
+    fontFamily:   'monospace',
+  },
+  keyHint: {
+    position:   'absolute',
+    top:        4,
+    right:      5,
+    fontSize:   9,
+    lineHeight: 1,
+    transition: 'color 0.1s ease',
+  },
+  itemContent: {
+    display:       'flex',
+    flexDirection: 'column',
+    alignItems:    'center',
+    gap:           3,
+  },
+  iconSwatch: {
+    width:        28,
+    height:       28,
+    borderRadius: 4,
+    boxShadow:    'inset 0 1px 2px rgba(255,255,255,0.2)',
+  },
+  itemName: {
+    fontSize:      8,
+    letterSpacing: '0.02em',
+    lineHeight:    1,
+    maxWidth:      50,
+    textAlign:     'center',
+    overflow:      'hidden',
+    textOverflow:  'ellipsis',
+    whiteSpace:    'nowrap',
+    transition:    'color 0.1s ease',
+  },
+  activeDot: {
+    position:     'absolute',
+    bottom:       4,
+    left:         '50%',
+    transform:    'translateX(-50%)',
+    width:        4,
+    height:       4,
+    borderRadius: '50%',
+    background:   'rgba(255,255,255,0.7)',
+  },
+}
+
+// ── Main Overlay export ───────────────────────────────────────────────────────
 
 export default function Overlay({ locked, onStart }) {
-  // ── Read interaction state ────────────────────────────────────────────────
-  const lookingAt        = useInteractionStore(state => state.lookingAt)
-  const lastInteraction  = useInteractionStore(state => state.lastInteraction)
+  // ── Store subscriptions ───────────────────────────────────────────────────
+  const lookingAt       = useInteractionStore(state => state.lookingAt)
+  const lastInteraction = useInteractionStore(state => state.lastInteraction)
 
-  // ── Read game state ───────────────────────────────────────────────────────
-  // Each selector subscribes to only its slice — other state changes don't
-  // cause this component to re-render.
   const health      = useGameStore(state => state.health)
   const maxHealth   = useGameStore(state => state.maxHealth)
   const stamina     = useGameStore(state => state.stamina)
   const maxStamina  = useGameStore(state => state.maxStamina)
   const isExhausted = useGameStore(state => state.isExhausted)
+  const cameraYaw   = useGameStore(state => state.cameraYaw)
+  const inventory   = useGameStore(state => state.inventory)
+  const equippedSlot = useGameStore(state => state.equippedSlot)
 
-  // ── Read world state ──────────────────────────────────────────────────────
-  // Count how many unique NPCs have been met (shown in HUD as a small counter).
   const metCount = useWorldStore(state => state.interactedNPCs.length)
 
-  // ── Feedback message (shown briefly after pressing E) ────────────────────
+  // ── Interaction feedback ──────────────────────────────────────────────────
   const [feedbackMsg, setFeedbackMsg] = useState(null)
 
   useEffect(() => {
     if (!lastInteraction) return
-
     setFeedbackMsg(`You greeted ${lastInteraction.name}`)
-
-    const timer = setTimeout(() => setFeedbackMsg(null), FEEDBACK_DURATION)
-    return () => clearTimeout(timer)
+    const t = setTimeout(() => setFeedbackMsg(null), FEEDBACK_DURATION)
+    return () => clearTimeout(t)
   }, [lastInteraction])
 
   return (
     <>
-      {/* ── Start panel (shown when not locked) ──────────────────────── */}
+      {/* ── Start screen ─────────────────────────────────────────────── */}
       {!locked && (
-        <div onClick={onStart} style={styles.overlay}>
-          <h1 style={styles.title}>3D Explorer</h1>
-          <p style={styles.sub}>A first-person world — React Three Fiber</p>
+        <div onClick={onStart} style={sc.overlay}>
+          <h1 style={sc.title}>3D Explorer</h1>
+          <p style={sc.sub}>A first-person world — React Three Fiber</p>
 
-          <div style={styles.keyGrid}>
-            <span style={styles.keyLabel}>W A S D</span>
-            <span style={styles.keyDesc}>Move</span>
-            <span style={styles.keyLabel}>Mouse</span>
-            <span style={styles.keyDesc}>Look around</span>
-            <span style={styles.keyLabel}>Shift</span>
-            <span style={styles.keyDesc}>Sprint</span>
-            <span style={styles.keyLabel}>E</span>
-            <span style={styles.keyDesc}>Interact</span>
-            <span style={styles.keyLabel}>ESC</span>
-            <span style={styles.keyDesc}>Pause</span>
+          <div style={sc.keyGrid}>
+            <span style={sc.keyLabel}>W A S D</span><span style={sc.keyDesc}>Move</span>
+            <span style={sc.keyLabel}>Mouse</span>  <span style={sc.keyDesc}>Look around</span>
+            <span style={sc.keyLabel}>Shift</span>  <span style={sc.keyDesc}>Sprint (drains stamina)</span>
+            <span style={sc.keyLabel}>E</span>       <span style={sc.keyDesc}>Interact with NPCs</span>
+            <span style={sc.keyLabel}>1 – 5</span>   <span style={sc.keyDesc}>Select inventory slot</span>
+            <span style={sc.keyLabel}>ESC</span>     <span style={sc.keyDesc}>Pause / release mouse</span>
           </div>
 
-          <div style={styles.cta}>Click anywhere to start</div>
-          <p style={styles.escNote}>
-            Press <strong>ESC</strong> at any time to release the mouse and return to your browser
+          <div style={sc.cta}>Click anywhere to start</div>
+          <p style={sc.escNote}>
+            Press <strong>ESC</strong> at any time to release the mouse
           </p>
         </div>
       )}
 
-      {/* ── Crosshair (always shown while locked) ────────────────────── */}
-      {locked && (
-        <div style={styles.crosshairWrap}>
-          <div style={{
-            ...styles.crosshairH,
-            background: lookingAt ? 'rgba(136, 204, 255, 0.9)' : 'rgba(255,255,255,0.85)',
-          }} />
-          <div style={{
-            ...styles.crosshairV,
-            background: lookingAt ? 'rgba(136, 204, 255, 0.9)' : 'rgba(255,255,255,0.85)',
-          }} />
-        </div>
-      )}
+      {/* ── HUD (all elements below are only shown while locked) ──────── */}
 
-      {/* ── Health + Stamina bars (top-left) ─────────────────────────── */}
-      {/* Each bar is a fixed-width track with a coloured fill that animates
-          via CSS width transitions. The fill colour changes based on percentage:
-            Health:  green > 50%, orange 25–50%, red < 25%
-            Stamina: blue normally, dark-red when exhausted (sprint locked)
-          CSS transition on width gives smooth bar movement without React
-          state — the width is set directly from the current value. */}
+      {/* Compass */}
+      {locked && <Compass yaw={cameraYaw} />}
+
+      {/* Stat bars */}
       {locked && (
         <StatBars
           health={health}
@@ -118,304 +485,194 @@ export default function Overlay({ locked, onStart }) {
         />
       )}
 
-      {/* ── Interaction prompt ────────────────────────────────────────── */}
-      {/* Shown when the player is looking at an interactable within range.
-          CSS opacity transition makes it fade in/out smoothly. */}
+      {/* Crosshair */}
+      {locked && (
+        <div style={hud.crosshairWrap}>
+          <div style={{ ...hud.chH, background: lookingAt ? '#88ccff' : 'rgba(255,255,255,0.85)' }} />
+          <div style={{ ...hud.chV, background: lookingAt ? '#88ccff' : 'rgba(255,255,255,0.85)' }} />
+        </div>
+      )}
+
+      {/* Interaction prompt */}
       {locked && (
         <div style={{
-          ...styles.interactPrompt,
-          opacity: lookingAt ? 1 : 0,
-          transform: lookingAt
-            ? 'translate(-50%, 0)'
-            : 'translate(-50%, 6px)',
+          ...hud.prompt,
+          opacity:   lookingAt ? 1 : 0,
+          transform: `translate(-50%, ${lookingAt ? 0 : 6}px)`,
         }}>
-          <span style={styles.keyBadge}>E</span>
+          <span style={hud.keyBadge}>E</span>
           &nbsp;&nbsp;Inspect{lookingAt ? ` ${lookingAt.name}` : ''}
         </div>
       )}
 
-      {/* ── Interaction feedback ──────────────────────────────────────── */}
+      {/* Interaction feedback */}
       {locked && feedbackMsg && (
-        <div style={styles.feedback}>
-          {feedbackMsg}
-        </div>
+        <div style={hud.feedback}>{feedbackMsg}</div>
       )}
 
-      {/* ── HUD hint bar ──────────────────────────────────────────────── */}
+      {/* Inventory quick bar */}
       {locked && (
-        <div style={styles.hud}>
-          W A S D · Move &nbsp;|&nbsp; Mouse · Look &nbsp;|&nbsp; Shift · Sprint &nbsp;|&nbsp; E · Interact &nbsp;|&nbsp; ESC · Pause
+        <InventoryBar inventory={inventory} equippedSlot={equippedSlot} />
+      )}
+
+      {/* HUD hint bar */}
+      {locked && (
+        <div style={hud.hints}>
+          WASD · Move &nbsp;|&nbsp; Shift · Sprint &nbsp;|&nbsp; E · Interact &nbsp;|&nbsp; 1–5 · Slot &nbsp;|&nbsp; ESC · Pause
         </div>
       )}
     </>
   )
 }
 
-// ── StatBars sub-component ───────────────────────────────────────────────────
-//
-// Extracted as its own component so it can subscribe to game store values
-// without embedding all that logic in the already-busy Overlay function.
-// The `locked` guard is handled by the parent — StatBars always renders
-// when mounted, but it's only rendered by Overlay when locked=true.
+// ── Start screen styles ───────────────────────────────────────────────────────
 
-function StatBars({ health, maxHealth, stamina, maxStamina, isExhausted, metCount }) {
-  const hpPct  = Math.max(0, (health  / maxHealth)  * 100)
-  const stPct  = Math.max(0, (stamina / maxStamina) * 100)
-
-  // Health bar colour: green → orange → red as HP falls
-  const hpColor = hpPct > 50 ? '#4cce6a' : hpPct > 25 ? '#f59e0b' : '#ef4444'
-
-  // Stamina bar colour: blue normally, muted red when exhausted (sprint locked)
-  const stColor = isExhausted ? '#9b2c2c' : '#3b9eff'
-
-  return (
-    <div style={barStyles.container}>
-      {/* Health */}
-      <div style={barStyles.row}>
-        <span style={barStyles.icon}>♥</span>
-        <div style={barStyles.track}>
-          <div style={{ ...barStyles.fill, width: `${hpPct}%`, background: hpColor }} />
-        </div>
-        <span style={barStyles.value}>{Math.ceil(health)}</span>
-      </div>
-
-      {/* Stamina */}
-      <div style={barStyles.row}>
-        <span style={barStyles.icon}>⚡</span>
-        <div style={barStyles.track}>
-          <div style={{ ...barStyles.fill, width: `${stPct}%`, background: stColor }} />
-          {isExhausted && <span style={barStyles.exhaustedLabel}>EXHAUSTED</span>}
-        </div>
-        <span style={barStyles.value}>{Math.ceil(stamina)}</span>
-      </div>
-
-      {/* Met NPCs counter */}
-      {metCount > 0 && (
-        <div style={barStyles.metRow}>
-          <span style={barStyles.metText}>Met {metCount} / 3</span>
-        </div>
-      )}
-    </div>
-  )
-}
-
-const barStyles = {
-  container: {
-    position: 'fixed',
-    top: '20px',
-    left: '20px',
-    display: 'flex',
-    flexDirection: 'column',
-    gap: '7px',
-    pointerEvents: 'none',
-    zIndex: 10,
-    fontFamily: 'monospace',
-    userSelect: 'none',
-  },
-  row: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: '7px',
-  },
-  icon: {
-    fontSize: '12px',
-    color: 'rgba(255,255,255,0.6)',
-    width: '14px',
-    textAlign: 'center',
-    flexShrink: 0,
-  },
-  track: {
-    position: 'relative',
-    width: '120px',
-    height: '7px',
-    background: 'rgba(0,0,0,0.55)',
-    borderRadius: '4px',
-    overflow: 'visible',
-    border: '1px solid rgba(255,255,255,0.12)',
-  },
-  fill: {
-    height: '100%',
-    borderRadius: '4px',
-    transition: 'width 0.15s linear, background 0.3s ease',
-  },
-  value: {
-    fontSize: '11px',
-    color: 'rgba(255,255,255,0.55)',
-    minWidth: '28px',
-    textAlign: 'right',
-  },
-  exhaustedLabel: {
-    position: 'absolute',
-    top: '-1px',
-    left: '50%',
-    transform: 'translateX(-50%)',
-    fontSize: '8px',
-    color: '#f87171',
-    letterSpacing: '0.08em',
-    whiteSpace: 'nowrap',
-    fontFamily: 'monospace',
-  },
-  metRow: {
-    marginTop: '2px',
-  },
-  metText: {
-    fontSize: '11px',
-    color: 'rgba(136, 204, 255, 0.6)',
-    letterSpacing: '0.04em',
-  },
-}
-
-// ── Inline styles ────────────────────────────────────────────────────────────
-
-const styles = {
+const sc = {
   overlay: {
-    position: 'fixed',
-    inset: 0,
-    background: 'rgba(0,0,0,0.78)',
-    display: 'flex',
+    position:      'fixed',
+    inset:         0,
+    background:    'rgba(0,0,0,0.80)',
+    display:       'flex',
     flexDirection: 'column',
-    alignItems: 'center',
+    alignItems:    'center',
     justifyContent: 'center',
-    gap: '12px',
-    cursor: 'pointer',
-    zIndex: 20,
-    fontFamily: 'monospace',
-    userSelect: 'none',
+    gap:           12,
+    cursor:        'pointer',
+    zIndex:        20,
+    fontFamily:    'monospace',
+    userSelect:    'none',
   },
   title: {
-    fontSize: '38px',
-    color: '#fff',
+    fontSize:      38,
+    color:         '#fff',
     letterSpacing: '0.05em',
+    margin:        0,
   },
   sub: {
-    fontSize: '14px',
-    color: 'rgba(255,255,255,0.55)',
+    fontSize: 14,
+    color:    'rgba(255,255,255,0.5)',
+    margin:   0,
   },
   keyGrid: {
-    marginTop: '10px',
-    display: 'grid',
-    gridTemplateColumns: 'auto auto',
-    gap: '6px 28px',
+    marginTop:            10,
+    display:              'grid',
+    gridTemplateColumns:  'auto auto',
+    gap:                  '7px 28px',
+    alignItems:           'baseline',
   },
   keyLabel: {
-    color: 'rgba(255,255,255,0.9)',
-    fontSize: '13px',
+    color:     'rgba(255,255,255,0.9)',
+    fontSize:  13,
     textAlign: 'right',
   },
   keyDesc: {
-    color: 'rgba(255,255,255,0.5)',
-    fontSize: '13px',
+    color:    'rgba(255,255,255,0.5)',
+    fontSize: 13,
   },
   cta: {
-    marginTop: '20px',
-    padding: '10px 28px',
-    border: '2px solid rgba(255,255,255,0.4)',
-    borderRadius: '6px',
-    color: '#fff',
-    fontSize: '15px',
+    marginTop:     20,
+    padding:       '10px 28px',
+    border:        '2px solid rgba(255,255,255,0.35)',
+    borderRadius:  6,
+    color:         '#fff',
+    fontSize:      15,
     letterSpacing: '0.05em',
   },
   escNote: {
-    marginTop: '10px',
-    fontSize: '12px',
-    color: 'rgba(255,255,255,0.35)',
+    marginTop: 10,
+    fontSize:  12,
+    color:     'rgba(255,255,255,0.3)',
     textAlign: 'center',
-    maxWidth: '300px',
-    lineHeight: '1.5',
+    maxWidth:  320,
+    lineHeight: 1.5,
+    margin:    0,
   },
+}
 
-  // ── Crosshair ─────────────────────────────────────────────────────────────
+// ── HUD shared styles ─────────────────────────────────────────────────────────
+
+const hud = {
   crosshairWrap: {
-    position: 'fixed',
-    top: '50%',
-    left: '50%',
-    transform: 'translate(-50%,-50%)',
-    width: '20px',
-    height: '20px',
+    position:      'fixed',
+    top:           '50%',
+    left:          '50%',
+    transform:     'translate(-50%,-50%)',
+    width:         20,
+    height:        20,
     pointerEvents: 'none',
-    zIndex: 10,
+    zIndex:        10,
   },
-  // Horizontal bar of the crosshair
-  crosshairH: {
-    position: 'absolute',
-    top: '50%',
-    left: 0,
-    right: 0,
-    height: '2px',
+  chH: {
+    position:  'absolute',
+    top:       '50%',
+    left:      0,
+    right:     0,
+    height:    2,
     transform: 'translateY(-50%)',
-    transition: 'background 0.15s ease',
+    transition: 'background 0.12s ease',
   },
-  // Vertical bar of the crosshair
-  crosshairV: {
-    position: 'absolute',
-    left: '50%',
-    top: 0,
-    bottom: 0,
-    width: '2px',
+  chV: {
+    position:  'absolute',
+    left:      '50%',
+    top:       0,
+    bottom:    0,
+    width:     2,
     transform: 'translateX(-50%)',
-    transition: 'background 0.15s ease',
+    transition: 'background 0.12s ease',
   },
-
-  // ── Interaction prompt ────────────────────────────────────────────────────
-  interactPrompt: {
-    position: 'fixed',
-    top: 'calc(50% - 36px)',   // just above the crosshair
-    left: '50%',
-    transform: 'translate(-50%, 0)',
-    color: '#fff',
-    fontSize: '14px',
-    fontFamily: 'monospace',
+  prompt: {
+    position:      'fixed',
+    top:           'calc(50% - 38px)',
+    left:          '50%',
+    transform:     'translateX(-50%)',
+    color:         '#fff',
+    fontSize:      14,
+    fontFamily:    'monospace',
     letterSpacing: '0.04em',
-    textShadow: '0 1px 6px rgba(0,0,0,0.95)',
+    textShadow:    '0 1px 6px rgba(0,0,0,0.95)',
     pointerEvents: 'none',
-    zIndex: 10,
-    whiteSpace: 'nowrap',
-    transition: 'opacity 0.2s ease, transform 0.2s ease',
-    display: 'flex',
-    alignItems: 'center',
-    gap: '6px',
+    zIndex:        10,
+    whiteSpace:    'nowrap',
+    display:       'flex',
+    alignItems:    'center',
+    gap:           6,
+    transition:    'opacity 0.2s ease, transform 0.2s ease',
   },
   keyBadge: {
-    display: 'inline-block',
-    padding: '1px 7px',
-    border: '1.5px solid rgba(255,255,255,0.7)',
-    borderRadius: '4px',
-    fontSize: '12px',
-    color: '#fff',
-    background: 'rgba(0,0,0,0.5)',
-    lineHeight: '1.6',
+    display:      'inline-block',
+    padding:      '2px 7px',
+    border:       '1.5px solid rgba(255,255,255,0.65)',
+    borderRadius: 4,
+    fontSize:     12,
+    background:   'rgba(0,0,0,0.5)',
+    lineHeight:   1.6,
   },
-
-  // ── Interaction feedback ──────────────────────────────────────────────────
   feedback: {
-    position: 'fixed',
-    top: '38%',
-    left: '50%',
-    transform: 'translateX(-50%)',
-    color: 'rgba(136, 204, 255, 0.95)',
-    fontSize: '15px',
-    fontFamily: 'monospace',
+    position:      'fixed',
+    top:           '37%',
+    left:          '50%',
+    transform:     'translateX(-50%)',
+    color:         '#93c5fd',
+    fontSize:      15,
+    fontFamily:    'monospace',
     letterSpacing: '0.05em',
-    textShadow: '0 1px 8px rgba(0,0,0,1)',
+    textShadow:    '0 1px 8px rgba(0,0,0,1)',
     pointerEvents: 'none',
-    zIndex: 10,
-    whiteSpace: 'nowrap',
-    animation: 'fadeInUp 0.25s ease',
+    zIndex:        10,
+    whiteSpace:    'nowrap',
   },
-
-  // ── HUD hint bar ──────────────────────────────────────────────────────────
-  hud: {
-    position: 'fixed',
-    bottom: '24px',
-    left: '50%',
-    transform: 'translateX(-50%)',
-    color: 'rgba(255,255,255,0.7)',
-    fontSize: '13px',
+  hints: {
+    position:      'fixed',
+    bottom:        18,
+    left:          '50%',
+    transform:     'translateX(-50%)',
+    color:         'rgba(255,255,255,0.55)',
+    fontSize:      12,
     letterSpacing: '0.04em',
-    textShadow: '0 1px 4px rgba(0,0,0,0.9)',
+    textShadow:    '0 1px 4px rgba(0,0,0,0.9)',
     pointerEvents: 'none',
-    zIndex: 10,
-    fontFamily: 'monospace',
-    whiteSpace: 'nowrap',
+    zIndex:        10,
+    fontFamily:    'monospace',
+    whiteSpace:    'nowrap',
   },
 }

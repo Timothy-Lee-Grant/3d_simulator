@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
-import { Canvas, useThree } from '@react-three/fiber'
+import { Canvas, useThree, useFrame } from '@react-three/fiber'
 import { Sky, Environment } from '@react-three/drei'
 import useAudio from './hooks/useAudio'
+import { useGameStore } from './store/useGameStore'
 
 import Player         from './components/Player'
 import World          from './components/World'
@@ -16,25 +17,48 @@ import PostProcessing from './components/PostProcessing'
 import Overlay        from './components/Overlay'
 
 // Sun direction shared between the sky shader and the directional light.
-// They must match — if the visible sun in the sky is north-east at high noon,
-// the shadow-casting light should come from the same direction.
 const SUN_POSITION = [60, 90, 40]
 
 /**
- * LockBridge — a tiny helper that lives inside the Canvas so it can
- * access useThree(). It captures the WebGL canvas element and hands a
- * requestPointerLock() function up to App via the onReady callback.
- *
- * This is the idiomatic R3F pattern for reaching across the Canvas
- * boundary: put a null-rendering component inside, use useThree() to
- * grab what you need, then surface it via a callback.
+ * LockBridge — null-rendering component inside Canvas that surfaces
+ * requestPointerLock() to the App via a callback.
  */
 function LockBridge({ onReady }) {
   const { gl } = useThree()
-
   useEffect(() => {
     onReady(() => gl.domElement.requestPointerLock())
   }, [gl, onReady])
+  return null
+}
+
+/**
+ * CameraSync — reads camera.rotation.y every frame and syncs it to
+ * useGameStore at ~20Hz so the Overlay's compass stays up to date.
+ *
+ * ── Why throttled? ────────────────────────────────────────────────────────
+ * setCameraYaw triggers a re-render of any Overlay component subscribed to
+ * cameraYaw. At 60Hz this would be one re-render per frame — acceptable, but
+ * wasteful for a compass that only needs to update 15-20 times per second.
+ * The 50ms accumulator limits re-renders to 20/sec (fine for smooth compass
+ * animation since the transition is handled by CSS).
+ *
+ * ── Why inside Canvas? ────────────────────────────────────────────────────
+ * useFrame and useThree() only work inside the R3F Canvas context. CameraSync
+ * has no visible output — it's a null component that bridges Canvas state to
+ * the Zustand store, which the DOM Overlay can then read.
+ */
+function CameraSync() {
+  const { camera }     = useThree()
+  const setCameraYaw   = useGameStore(state => state.setCameraYaw)
+  const accumRef       = useRef(0)
+
+  useFrame((_, delta) => {
+    accumRef.current += delta
+    if (accumRef.current >= 0.05) {          // sync at 20Hz
+      setCameraYaw(camera.rotation.y)
+      accumRef.current = 0
+    }
+  })
 
   return null
 }
@@ -43,15 +67,23 @@ export default function App() {
   const [locked, setLocked] = useState(false)
   const lockFn = useRef(null)
 
-  // Initialize audio system the moment the player first locks in
   useAudio(locked)
 
-  // Called by LockBridge once the canvas is mounted
+  // ── Seed inventory with starter items ────────────────────────────────────
+  // Items are added once on mount via getState() (no subscription needed).
+  // These give the HUD quick bar something to show on first load.
+  // Phase 3.5 will replace this with items placed in the scene world.
+  useEffect(() => {
+    const { pickUpItem } = useGameStore.getState()
+    pickUpItem({ id: 'item_key',  name: 'Ancient Key',  color: '#f59e0b', description: 'A heavy iron key of unknown origin.' })
+    pickUpItem({ id: 'item_map',  name: 'Old Map',      color: '#84cc16', description: 'A tattered map of a nameless settlement.' })
+    pickUpItem({ id: 'item_herb', name: 'Healing Herb', color: '#22c55e', description: 'Smells of pine. Restores health when used.' })
+  }, [])
+
   const handleReady = useCallback((fn) => {
     lockFn.current = fn
   }, [])
 
-  // Called by the Overlay's click handler
   const handleStart = () => lockFn.current?.()
 
   return (
@@ -62,13 +94,9 @@ export default function App() {
         camera={{ fov: 75, near: 0.1, far: 500, position: [0, 1.7, 0] }}
         style={{ width: '100vw', height: '100vh', display: 'block' }}
       >
-        {/* Fallback background colour shown for the first frame before Sky loads */}
         <color attach="background" args={['#a8c8e8']} />
 
-        {/* ── Sky shader ────────────────────────────────────────────── */}
-        {/* Preetham atmospheric scattering model — procedural sky gradient.
-            sunPosition must match the directional light position below.
-            turbidity: 0=clear, 20=very hazy. rayleigh: controls blue sky intensity. */}
+        {/* ── Sky ───────────────────────────────────────────────────── */}
         <Sky
           sunPosition={SUN_POSITION}
           turbidity={7}
@@ -77,24 +105,14 @@ export default function App() {
           mieDirectionalG={0.82}
         />
 
-        {/* ── Environment map ───────────────────────────────────────── */}
-        {/* Loads an HDR panorama and applies it as the scene's indirect lighting
-            source. All PBR materials (MeshStandardMaterial) sample this map for:
-              - Ambient diffuse fill (indirect light from the sky)
-              - Specular reflections (shiny surfaces reflect the sky/buildings)
-              - Metalness (metals reflect the env map tinted by their albedo colour)
-            background={false} — Sky renders the visible sky, not the env map.
-            NOTE: presets are fetched from the internet on first load. */}
+        {/* ── Environment map (indirect lighting + reflections) ─────── */}
         <Environment preset="sunset" background={false} />
 
         {/* ── Fog ───────────────────────────────────────────────────── */}
-        {/* Horizon colour tuned to match the Sky shader's horizon at this time of day */}
         <fogExp2 attach="fog" args={['#c8d0d8', 0.015]} />
 
         {/* ── Lighting ──────────────────────────────────────────────── */}
-        {/* Ambient is kept low — Environment map provides most of the fill light */}
         <ambientLight color="#ffeedd" intensity={0.20} />
-
         <directionalLight
           color="#fff5e0"
           intensity={1.3}
@@ -109,8 +127,6 @@ export default function App() {
           shadow-camera-top={60}
           shadow-camera-bottom={-60}
         />
-
-        {/* Hemisphere kept for ground-bounce fill in shadow areas */}
         <hemisphereLight args={['#b0c8e0', '#4a7c45', 0.25]} />
 
         {/* ── Player ────────────────────────────────────────────────── */}
@@ -127,32 +143,24 @@ export default function App() {
         <Landmark />
         <StreetLamps />
 
-        {/* ── NPCs (interactable characters) ────────────────────────── */}
-        {/* Each NPC wraps a Human with a unique id and display name.
-            The raycaster in Player.jsx tests against these groups.
-            phaseOffset staggers idle animation so they don't sync up. */}
+        {/* ── NPCs ──────────────────────────────────────────────────── */}
         <NPC npcId="npc_01" name="The Stranger"   position={[0,   0, -5]} rotation={[0, Math.PI,       0]} phaseOffset={0.0} />
         <NPC npcId="npc_02" name="The Wanderer"   position={[2.5, 0, -7]} rotation={[0, Math.PI * 1.3, 0]} phaseOffset={2.1} />
         <NPC npcId="npc_03" name="The Gatekeeper" position={[-2,  0, -6]} rotation={[0, Math.PI * 0.8, 0]} phaseOffset={4.7} />
 
         {/* ── Particles ─────────────────────────────────────────────── */}
-        {/* Ambient dust motes (BufferGeometry points, CPU-animated) and
-            warm sparkle halos at each street lamp (Drei Sparkles).
-            See Particles.jsx for the GPU buffer / draw-call explanation. */}
         <Particles />
 
         {/* ── Post-processing ───────────────────────────────────────── */}
-        {/* Must come last inside Canvas so it captures the fully-lit scene.
-            EffectComposer intercepts the render pipeline and applies screen-space
-            effects: SMAA (anti-aliasing), Bloom (glow), Vignette (edge darkening).
-            See PostProcessing.jsx for per-effect tuning notes. */}
         <PostProcessing />
 
-        {/* ── Canvas/DOM bridge ─────────────────────────────────────── */}
+        {/* ── Canvas bridges ────────────────────────────────────────── */}
         <LockBridge onReady={handleReady} />
+        {/* CameraSync writes camera.rotation.y → store at 20Hz for the compass */}
+        <CameraSync />
       </Canvas>
 
-      {/* ── DOM overlay (start screen + HUD) — lives outside Canvas ── */}
+      {/* ── DOM overlay (start screen + HUD) ─────────────────────────── */}
       <Overlay locked={locked} onStart={handleStart} />
     </>
   )
