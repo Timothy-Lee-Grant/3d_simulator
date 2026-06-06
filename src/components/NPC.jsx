@@ -35,6 +35,7 @@ import { useFrame } from '@react-three/fiber'
 import { useInteractionStore } from '../store/useInteractionStore'
 import { registerInteractable, deregisterInteractable } from '../systems/interactables'
 import { getTerrainHeight } from '../systems/terrain'
+import { playNPCMurmur } from '../systems/AudioManager'
 import Human from './Human'
 
 // How fast the highlight ring fades in/out (fraction of gap closed per frame at 60fps)
@@ -55,6 +56,11 @@ const RING_Y         = 0.02   // just above ground, avoids z-fighting with the f
  * @param {[number,number,number]} rotation   World rotation (Euler, radians)
  * @param {number}               phaseOffset  Passed through to Human's idle animation
  */
+// Per-NPC pitch scale — gives each character a subtly different voice
+const PITCH_SCALES = { npc_01: 0.92, npc_02: 1.08, npc_03: 0.85 }
+// Head height offset so murmurs come from the mouth, not the feet
+const HEAD_HEIGHT = 1.62
+
 export default function NPC({ npcId, name, position = [0, 0, 0], rotation = [0, 0, 0], phaseOffset = 0 }) {
   // Snap Y to terrain at this NPC's XZ position — the JSON stores y=0 as a placeholder
   const groundY = getTerrainHeight(position[0], position[2])
@@ -66,6 +72,11 @@ export default function NPC({ npcId, name, position = [0, 0, 0], rotation = [0, 
   const ringRef  = useRef()
   // Smooth highlight value: 0 = not highlighted, 1 = fully highlighted
   const highlightVal = useRef(0)
+
+  // ── Murmur timer (5.1) ───────────────────────────────────────────────────
+  // Each NPC emits a quiet positional ambient sound on a random interval.
+  // Start at a staggered time so all three NPCs don't murmur simultaneously.
+  const murmurTimer = useRef(phaseOffset * 2.5 + 4 + Math.random() * 6)
 
   // Read the interaction store — is this NPC currently targeted?
   const lookingAt = useInteractionStore(state => state.lookingAt)
@@ -82,10 +93,28 @@ export default function NPC({ npcId, name, position = [0, 0, 0], rotation = [0, 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [npcId, name])
 
-  // ── Animate highlight ring ────────────────────────────────────────────────
-  // Lerp the highlight value toward 1 when targeted, 0 otherwise.
-  // Then apply it to the ring's opacity and emissiveIntensity.
-  useFrame(() => {
+  // ── Animate highlight ring + ambient murmur ──────────────────────────────
+  useFrame((_, delta) => {
+    // ── Murmur timer (5.1) ───────────────────────────────────────────────
+    // Tick down; fire a positional murmur sound when it expires.
+    // Don't murmur during active dialogue — it would overlap spoken text.
+    murmurTimer.current -= delta
+    if (murmurTimer.current <= 0) {
+      // Random interval 8–22 seconds keeps NPCs from feeling mechanical
+      murmurTimer.current = 8 + Math.random() * 14
+      // Only play if no dialogue is open (avoid overlap with player interaction)
+      if (!useInteractionStore.getState().activeDialogue) {
+        const pitch = PITCH_SCALES[npcId] ?? 1.0
+        playNPCMurmur(
+          snappedPosition[0],
+          snappedPosition[1] + HEAD_HEIGHT,
+          snappedPosition[2],
+          pitch,
+        )
+      }
+    }
+
+    // ── Highlight ring ───────────────────────────────────────────────────
     if (!ringRef.current) return
 
     const target = isTargeted ? 1 : 0
@@ -94,7 +123,6 @@ export default function NPC({ npcId, name, position = [0, 0, 0], rotation = [0, 
     const v = highlightVal.current
     const mat = ringRef.current.material
 
-    // Scale the ring up slightly when highlighted for a "pulse" feel
     ringRef.current.scale.setScalar(1 + v * 0.08)
     mat.opacity          = v * 0.85
     mat.emissiveIntensity = v * 2.5

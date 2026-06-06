@@ -1,311 +1,474 @@
-# The Audio System
+# Phase 5 — Audio: A Complete Engineering Lecture
 
-> How `AudioManager.js` synthesizes every game sound from scratch using the Web Audio API, and how footsteps are timed to the camera's head bob.
-
----
-
-## Why No Audio Files?
-
-Most games ship `.mp3` or `.wav` files for every sound. We took a different approach: every sound is **synthesized at runtime** using the browser's Web Audio API. This means:
-
-- The project stays self-contained — no asset downloads needed
-- You learn signal processing concepts that apply everywhere (music, game audio, telecommunications)
-- You can tune any sound by changing a few numbers rather than re-recording
-
-The tradeoff: procedural sounds are simple and abstract compared to recorded audio. When you're ready to add realism, swap `playFootstep()` internals to load a real `.mp3` — the calling code in `Player.jsx` doesn't change.
+> **Who this is for:** Junior engineers who have read the Phase 4 document and understand React, Three.js, and useFrame. This document teaches the Web Audio API from fundamentals through spatial audio, synthesis, and the architecture patterns that connect audio to gameplay. Read every concept alongside the source files — `AudioManager.js`, `AudioBridge.jsx`, `Player.jsx`, and `NPC.jsx` are the living examples.
 
 ---
 
-## The Web Audio API: A Signal Graph
+## Table of Contents
 
-The Web Audio API models audio as a **directed graph of nodes**. Sound flows from a source, through processing nodes, and finally to your speakers:
+1. [Why Audio Is Different From Everything Else](#1-why-audio-is-different-from-everything-else)
+2. [The Web Audio API: A Signal Graph](#2-the-web-audio-api-a-signal-graph)
+3. [Sound Synthesis: Making Sounds Without Files](#3-sound-synthesis-making-sounds-without-files)
+4. [Spatial Audio: Sound in 3D Space](#4-spatial-audio-sound-in-3d-space)
+5. [The AudioBridge Pattern](#5-the-audiobridge-pattern)
+6. [The Footstep System — Landing and Surface Detection](#6-the-footstep-system--landing-and-surface-detection)
+7. [NPC Ambient Sound: Positional Audio in Practice](#7-npc-ambient-sound-positional-audio-in-practice)
+8. [Ambient Music: LFO Modulation and Detuning](#8-ambient-music-lfo-modulation-and-detuning)
+9. [The Browser Security Model: User Gesture Requirement](#9-the-browser-security-model-user-gesture-requirement)
+10. [Architecture: The Singleton AudioContext](#10-architecture-the-singleton-audiocontext)
+11. [Exercises](#11-exercises)
+
+---
+
+## 1. Why Audio Is Different From Everything Else
+
+Every other system in this project — terrain, lighting, materials, particles — is visual. The GPU renders it. The output is pixels on screen. Audio is different in almost every way.
+
+**Different API.** The Web Audio API has nothing to do with WebGL, Three.js, or React. It is a completely separate browser API with its own object model, its own threading model, and its own execution context.
+
+**Different timing model.** The GPU renders a frame every ~16ms. You can miss a visual frame and the next one corrects it — humans rarely notice occasional frame drops. Audio cannot miss a moment. The human ear detects timing glitches of 1–2 milliseconds. Web Audio solves this by running on a separate high-priority audio thread, ahead of the main JavaScript thread. You schedule sounds to play at precise `AudioContext.currentTime` values, not "as soon as possible."
+
+**Different resource model.** Visual assets (textures, geometry) live in GPU memory. Audio assets live in RAM as `AudioBuffer` objects, or are generated in real-time by oscillators and noise generators. In this project, every sound is synthesized — no audio files.
+
+**Different interaction requirement.** Browsers block audio until a user interaction occurs. This policy cannot be worked around. The game's pointer-lock click is the user gesture that unlocks audio. `useAudio.js` watches for the locked state to trigger this.
+
+Understanding these differences explains why `AudioManager.js` exists as an entirely separate module — audio and rendering are genuinely separate systems that need to be synchronized.
+
+---
+
+## 2. The Web Audio API: A Signal Graph
+
+The mental model for the Web Audio API is a **directed graph of audio nodes**. Sound flows from source nodes through processing nodes to the destination (speakers):
 
 ```
-Source → [Filter] → [Filter] → Gain → Destination (speakers)
+Source → Filter → Gain → Destination
 ```
 
-Every node is created from an `AudioContext`, which is the central object that owns the audio hardware, manages timing, and connects to your speakers.
+Every node does exactly one thing. The API's power comes from connecting them in different configurations.
+
+### Core Node Types
+
+**Source nodes** — produce sound:
+
+| Node | What it does |
+|---|---|
+| `OscillatorNode` | Generates a continuous waveform: sine, square, triangle, sawtooth |
+| `AudioBufferSourceNode` | Plays a pre-filled array of audio samples (our synthesized noise) |
+
+**Processing nodes** — transform sound:
+
+| Node | What it does |
+|---|---|
+| `GainNode` | Multiplies the signal by a value — the volume control of audio graphs |
+| `BiquadFilterNode` | Shapes frequency content: lowpass, highpass, bandpass |
+| `PannerNode` | Applies 3D spatial positioning — distance attenuation + stereo pan |
+
+**Destination** — the output:
+
+| Node | What it does |
+|---|---|
+| `AudioContext.destination` | Your speakers. Everything eventually connects here. |
+
+### Building a Graph
 
 ```javascript
 const ctx = new AudioContext()
 
-const osc  = ctx.createOscillator()   // source: generates a tone
-const gain = ctx.createGain()          // processing: controls volume
+const osc    = ctx.createOscillator()
+const filter = ctx.createBiquadFilter()
+const gain   = ctx.createGain()
 
-osc.connect(gain)          // osc → gain
-gain.connect(ctx.destination)  // gain → speakers
+osc.type = 'sine'
+osc.frequency.value = 440   // A4 — concert pitch A
+filter.type = 'lowpass'
+filter.frequency.value = 800
+gain.gain.value = 0.5
+
+osc.connect(filter)
+filter.connect(gain)
+gain.connect(ctx.destination)
 
 osc.start()
 ```
 
-### The three main node types
+This creates a 440Hz sine wave, filters out frequencies above 800Hz, halves the volume, and sends it to speakers.
 
-**Source nodes** — generate audio signal:
+### AudioParam: Scheduling at Audio Precision
 
-| Node | What it produces |
-|---|---|
-| `OscillatorNode` | A pure sine, square, sawtooth, or triangle wave at a set frequency |
-| `AudioBufferSourceNode` | Plays an array of pre-computed audio samples |
-| `MediaElementAudioSourceNode` | Wraps an `<audio>` HTML element |
-
-**Processing nodes** — transform the signal:
-
-| Node | What it does |
-|---|---|
-| `BiquadFilterNode` | Lowpass, highpass, bandpass, shelving — shapes frequency content |
-| `GainNode` | Multiplies the signal by a value (volume control) |
-| `ConvolverNode` | Applies a room impulse response (reverb) |
-| `DelayNode` | Delays the signal by a fixed time (echo) |
-| `DynamicsCompressorNode` | Limits the dynamic range (prevents clipping) |
-
-**Destination node** — the output: `ctx.destination` is a read-only node that represents your speakers. Everything eventually connects here.
-
----
-
-## The Browser Autoplay Problem
-
-Browsers block audio until the user has physically interacted with the page (clicked, pressed a key, etc.). If you try to play audio on page load, the browser silently refuses and logs a warning.
-
-This is why `AudioManager.js` uses a **lazy initialization** pattern:
+Every number in the Web Audio API is an `AudioParam` — not a plain JavaScript number. AudioParams support scheduled automation:
 
 ```javascript
-let ctx = null
-
-function getCtx() {
-  if (!ctx) {
-    // Creates the context — only allowed after a user gesture
-    ctx = new AudioContext()
-  }
-  if (ctx.state === 'suspended') {
-    ctx.resume()  // resumes if the browser suspended it
-  }
-  return ctx
-}
+// Scheduled automation — precise audio-thread timing:
+gain.gain.setValueAtTime(0,    now)                            // silent
+gain.gain.linearRampToValueAtTime(1.0, now + 0.01)            // 10ms attack
+gain.gain.exponentialRampToValueAtTime(0.001, now + 0.3)      // 300ms decay
 ```
 
-The `AudioContext` is created the first time any audio function is called. In our game, that's when `resumeAudioContext()` is called from `useAudio.js` — which fires on the pointer-lock click.
-
-### The suspended state
-
-Even after creation, an `AudioContext` can be in three states:
-
-| State | Meaning |
-|---|---|
-| `running` | Normal — audio plays |
-| `suspended` | Browser has paused it (no user gesture yet, or tab was backgrounded) |
-| `closed` | Permanently shut down |
-
-Calling `ctx.resume()` transitions from `suspended` to `running`. Our `getCtx()` function handles this on every call, so audio works even if the tab was backgrounded and came back.
+`ctx.currentTime` is the high-precision audio clock — it advances 44,100 times per second on the audio thread, independent of JavaScript's setTimeout or requestAnimationFrame. Scheduling to `ctx.currentTime + 0.01` means "in exactly 10ms of audio time" regardless of main-thread jitter. This is why synthesized sounds feel tight and precise.
 
 ---
 
-## Synthesizing Noise
+## 3. Sound Synthesis: Making Sounds Without Files
 
-Most game sounds (footsteps, impacts, wind, explosions) are better modeled with **noise** than with pure tones. Noise is a signal containing all frequencies simultaneously — like a waterfall, or static on a radio.
+This project synthesizes every sound from mathematics — oscillators, noise, filters. This teaches how sound works and is often better than compressed audio files for interactive sounds.
 
-### White noise
+### White and Brown Noise
 
-Every sample is an independent random number between -1 and +1:
+**White noise** — every sample is independently random. Flat frequency spectrum. Sounds like hiss.
 
 ```javascript
-const buffer = ctx.createBuffer(1, sampleRate * duration, sampleRate)
-const data = buffer.getChannelData(0)
-
-for (let i = 0; i < data.length; i++) {
+for (let i = 0; i < frameCount; i++) {
   data[i] = Math.random() * 2 - 1
 }
 ```
 
-White noise has **equal energy at all frequencies** — it sounds like hiss or static. By itself, it's harsh and thin.
-
-### Brown noise (Brownian noise)
-
-Each sample is the previous sample plus a small random step (a random walk):
+**Brown noise** — each sample is the previous sample plus a small random step (a random walk). More energy at low frequencies, less at high. Sounds like wind, rumble, ocean.
 
 ```javascript
-let lastOut = 0
-for (let i = 0; i < data.length; i++) {
+let lastOut = 0.0
+for (let i = 0; i < frameCount; i++) {
   const white = Math.random() * 2 - 1
   data[i] = (lastOut + 0.02 * white) / 1.02
   lastOut = data[i]
 }
 ```
 
-This integration process causes low frequencies to dominate — the spectrum falls at 6dB per octave (twice the frequency = half the amplitude). The result sounds like a waterfall, ocean waves, or wind. It's the right starting material for ambient sounds.
+Integration smooths out high frequencies — the signal can only change as fast as the `0.02` step size allows.
 
----
+### Filters Shape Noise Into Surface Sounds
 
-## How Footsteps Work: Shaped Noise
-
-A footstep is a brief burst of noise, shaped by two things:
-
-**1. Frequency content (the filter):** Different surfaces have different resonant frequencies.
-- **Grass/dirt**: soft impact, energy concentrated around 200–400 Hz (low band)
-- **Wood**: hollow knock, energy around 500–700 Hz
-- **Stone**: sharp click, energy around 900–1200 Hz
-
-We use a `BiquadFilterNode` in **bandpass** mode to isolate this frequency band from the white noise burst.
-
-**2. Volume over time (the envelope):** A footstep has an instant attack (the foot hits) and a fast decay (the impact dissipates). This is modeled with an **ADSR envelope** (Attack, Decay, Sustain, Release) — though for footsteps we only use Attack and Decay:
+Raw noise sounds like hiss. Filtering it at specific frequency bands makes it sound like physical surfaces:
 
 ```javascript
-const gain = ctx.createGain()
-const now  = ctx.currentTime
+// Grass footstep: low-frequency, earthy
+bandpass.frequency.value = 280   // Hz
+bandpass.Q.value = 0.7           // broad band = noisy, thuddy
 
-gain.gain.setValueAtTime(0, now)                           // starts silent
-gain.gain.linearRampToValueAtTime(0.4, now + 0.004)        // attack: 4ms to peak
-gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.1)  // decay: 100ms to silence
+// Stone footstep: high-frequency, sharp
+bandpass.frequency.value = 1000  // Hz
+bandpass.Q.value = 1.4           // narrower band = more tonal, clicking
 ```
 
-`exponentialRampToValueAtTime` is used for decay (not linear) because human hearing perceives loudness **logarithmically** — an exponential drop sounds like a natural, smooth fade, while a linear drop sounds abrupt.
+**What is Q?** The Q factor (quality factor) controls a filter's bandwidth. High Q = narrow band (a tuning fork ringing). Low Q = wide band (a generic thud). Q directly determines whether a sound feels "tonal" or "noisy."
 
-### The full footstep signal chain
+**Why does frequency determine surface character?** Dense surfaces (stone, concrete) transmit high-frequency vibrations efficiently — stone footsteps have sharp, clicking highs. Soft surfaces (grass, carpet) absorb high frequencies, leaving only the low-frequency thud of foot impact. This maps directly to the `'grass'`, `'wood'`, and `'stone'` variants in `AudioManager.js`.
 
+### Gain Envelopes: How Impact Sounds Shape Over Time
+
+Every physical impact sound has the same shape: instant attack, fast exponential decay:
+
+```javascript
+gain.gain.setValueAtTime(0, now)                             // silent
+gain.gain.linearRampToValueAtTime(volume, now + 0.004)       // 4ms — instant attack
+gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.10)   // 100ms decay
 ```
-White noise buffer
-       │
-   BiquadFilter (bandpass @ 280 Hz, Q=0.7)   ← removes everything except the target band
-       │
-   BiquadFilter (lowpass @ 900 Hz)           ← further smooths harshness
-       │
-   GainNode (4ms attack, 100ms decay)        ← shapes the impact envelope
-       │
-   ctx.destination
-```
+
+**Why exponential decay and not linear?** Human hearing is logarithmic. A sound that decays exponentially sounds like it's disappearing naturally. A linearly decaying sound feels mechanical, like a fader being manually pulled down. `exponentialRampToValueAtTime` matches how we actually hear things fade.
+
+**Why 0.0001 and not 0?** Exponential curves approach zero asymptotically — they never actually reach it. Providing 0 to `exponentialRampToValueAtTime` throws an error. `0.0001` is one ten-thousandth of full volume: completely inaudible.
 
 ---
 
-## How Wind Works: Brown Noise + LFO
+## 4. Spatial Audio: Sound in 3D Space
 
-Wind is a sustained, slowly-evolving sound. The signal chain:
+### What PannerNode Does
 
+A `PannerNode` has a position in 3D audio space. The `AudioContext.listener` (the player's ears) also has a position and orientation. Given both, the Web Audio engine automatically computes:
+
+1. **Distance attenuation** — closer = louder. The `inverse` model uses inverse-square falloff: double the distance → one-quarter the volume.
+
+2. **Stereo panning** — a source to the right produces more signal in the right channel than the left.
+
+3. **HRTF** (Head-Related Transfer Function) — a pre-computed model of how a physical head and ears modify sound based on direction. High-frequency content arrives slightly earlier at the nearer ear. The head's shape adds subtle frequency coloration based on elevation. HRTF produces convincing 3D localization in headphones.
+
+```javascript
+const panner = ctx.createPanner()
+panner.panningModel  = 'HRTF'        // physically accurate stereo model
+panner.distanceModel = 'inverse'     // inverse-square falloff
+panner.refDistance   = 2             // volume is unattenuated at this distance
+panner.maxDistance   = 18            // beyond this, volume is minimal
+panner.rolloffFactor = 1.8           // how fast volume drops
+
+panner.positionX.value = npcX
+panner.positionY.value = npcY
+panner.positionZ.value = npcZ
+
+// Signal chain:  source → gain → panner → ctx.destination
 ```
-Brown noise buffer (looping)
-          │
-    BiquadFilter (bandpass @ 320 Hz, Q=0.35)   ← isolates wind frequency band
-          │
-    BiquadFilter (highshelf @ 1800 Hz, -14dB)  ← cuts harshness above 1800 Hz
-          │
-    GainNode (master volume)
-          ↑
-    LFO OscillatorNode (0.07 Hz)
-          │
-    GainNode (LFO amplitude)
-          │
-    (connected to master gain's .gain AudioParam)
+
+### The Listener
+
+Spatial audio only computes correctly if the engine knows where the player's ears are:
+
+```javascript
+ctx.listener.positionX.value = camera.position.x
+ctx.listener.positionY.value = camera.position.y
+ctx.listener.positionZ.value = camera.position.z
+ctx.listener.forwardX.value  = forwardDirection.x
+ctx.listener.forwardY.value  = forwardDirection.y
+ctx.listener.forwardZ.value  = forwardDirection.z
+ctx.listener.upX.value       = upVector.x
+// ...
 ```
 
-### What an LFO does
+Three vectors fully describe the listener's orientation:
+- **Position** — where in the world
+- **Forward** — which direction the head faces
+- **Up** — which way is "up" relative to the head (usually 0,1,0 for a standing player)
 
-**LFO** stands for Low Frequency Oscillator — an oscillator running at a frequency too low to hear as a tone (below ~20 Hz), but fast enough to produce a perceptible rhythm.
+Without updating orientation, distance attenuation still works but stereo panning is wrong — sounds won't pan left/right as you turn. `AudioBridge.jsx` exists to keep all three vectors current.
 
-When the LFO's output is connected to a `GainNode.gain` AudioParam, it **modulates** (varies) the gain over time:
+---
+
+## 5. The AudioBridge Pattern
+
+### The Challenge
+
+The Web Audio API listener needs the camera's position and orientation. The camera lives inside the R3F Canvas, only accessible via `useThree()`. The audio API is completely outside the Canvas. How do you bridge them every frame?
+
+Exactly the same pattern as `CameraSync` in App.jsx: a **null-rendering component inside Canvas** that runs `useFrame`:
+
+```jsx
+// AudioBridge.jsx
+export default function AudioBridge() {
+  const { camera } = useThree()
+  const forward = useRef(new Vector3())   // reuse — no allocation per frame
+
+  useFrame(() => {
+    camera.getWorldDirection(forward.current)
+    const f = forward.current, p = camera.position, u = camera.up
+    updateListener(p.x, p.y, p.z,  f.x, f.y, f.z,  u.x, u.y, u.z)
+  })
+
+  return null
+}
+```
+
+This component has no visual output. Its only purpose is to run code every frame that has access to the camera. The `Vector3` ref is reused to avoid allocating a new object per frame — a micro-optimization that matters when code runs 60×/sec.
+
+### Why Not Throttle Like CameraSync?
+
+`CameraSync` throttles to 20Hz because it writes to a Zustand store — every write triggers a React re-render of components subscribed to `cameraYaw`. AudioBridge writes directly to Web Audio `AudioParam` objects, bypassing React entirely. Zero re-renders. Full frame rate (60Hz) costs nothing measurable and prevents perceptible audio direction lag when turning quickly.
+
+This is the same principle from DayNightCycle: when you're mutating non-React objects, there's no reason to throttle.
+
+---
+
+## 6. The Footstep System — Landing and Surface Detection
+
+### Landing Detection
+
+```javascript
+const wasAirborne = useRef(false)
+
+// In useFrame, BEFORE the ground snap:
+if (camera.position.y <= groundY) {
+  const fallSpeed = -velocityY.current   // positive when falling
+  if (wasAirborne.current && fallSpeed > LAND_VELOCITY_THRESHOLD) {
+    playLand(Math.min(1.0, fallSpeed / JUMP_VELOCITY))
+  }
+  camera.position.y = groundY
+  velocityY.current = 0   // ← snap zeros velocity here
+}
+
+// Update for the NEXT frame
+wasAirborne.current = camera.position.y > groundY + 0.05
+```
+
+**Why read `velocityY` before the snap?** After `velocityY.current = 0`, the fall speed is gone. Reading it immediately before zeroing captures the maximum impact velocity.
+
+**The threshold (3.5 u/s).** On every grounded frame, gravity pushes velocityY about 0.37 u/s negative before the snap resets it. Without a threshold, landing would fire every frame while standing. The 3.5 u/s threshold is well above normal ground contact but well below a genuine jump landing (~7.5 u/s).
+
+**Intensity scaling.** `Math.min(1.0, fallSpeed / JUMP_VELOCITY)` maps fall speed to [0,1]. Full jump height → intensity 1.0. Shorter falls are quieter. The `playLand` function scales the synthesized thud's amplitude by this value.
+
+### Surface-Aware Footsteps
+
+```javascript
+// Throttled to every 0.5 seconds
+downRaycaster.current.set(camera.position, downVec.current)
+const hits = downRaycaster.current.intersectObjects(scene.children, true)
+
+let surface = 'grass'
+for (const hit of hits) {
+  if (hit.distance > 8) break
+  let obj = hit.object
+  while (obj) {
+    if (obj.name === 'buildings' || obj.name === 'landmark') { surface = 'stone'; break }
+    if (obj.name === 'rocks') { surface = 'stone'; break }
+    obj = obj.parent
+  }
+  break
+}
+surfaceRef.current = surface
+
+// Footstep plays the detected surface:
+playFootstep(surfaceRef.current, volume)
+```
+
+**Why throttle to 0.5s?** Raycasting against the full scene tree is O(n) in triangles. At 60Hz this would be 120 raycasts/sec. Surface type changes at walking speed are imperceptible below 500ms intervals.
+
+**Why walk up the parent chain?** `intersectObjects(..., true)` returns individual mesh objects — leaf nodes of the scene tree. A building is a `<mesh>` inside `<group name="buildings">`. The hit is the mesh. `obj = obj.parent` walks up to the named group that identifies the surface type.
+
+---
+
+## 7. NPC Ambient Sound: Positional Audio in Practice
+
+Each NPC emits a quiet murmur every 8–22 seconds, synthesized from bandpass-filtered noise in the 250–480 Hz range (human voice fundamental frequencies). Because it runs through a PannerNode, it localizes in 3D — louder when close, panning left/right as you move around the NPC.
+
+```javascript
+// NPC.jsx — inside useFrame
+murmurTimer.current -= delta
+if (murmurTimer.current <= 0) {
+  murmurTimer.current = 8 + Math.random() * 14
+
+  if (!useInteractionStore.getState().activeDialogue) {
+    playNPCMurmur(
+      snappedPosition[0],
+      snappedPosition[1] + HEAD_HEIGHT,   // 1.62 — mouth height
+      snappedPosition[2],
+      PITCH_SCALES[npcId] ?? 1.0,
+    )
+  }
+}
+```
+
+**Key design decisions:**
+
+`phaseOffset * 2.5 + 4` as initial timer. The `phaseOffset` prop was originally for the idle animation phase. Reusing it staggers the three NPCs' first murmurs — they don't all sound simultaneously 8 seconds in.
+
+`useInteractionStore.getState()` not `useInteractionStore()`. The NPC already subscribes to `lookingAt` via the hook. Subscribing to `activeDialogue` via a hook would re-render the component every time any dialogue opens — even for NPCs not involved. `getState()` reads directly without subscribing. Since this runs in `useFrame` (already 60Hz), a subscription hook would be wasteful and redundant.
+
+**Per-NPC pitch scale** (`PITCH_SCALES = { npc_01: 0.92, npc_02: 1.08, npc_03: 0.85 }`). Scaling the center frequency of the bandpass by 0.85–1.08 gives each character a subtle voice difference. The Gatekeeper (0.85×) sounds slightly deeper; the Wanderer (1.08×) slightly brighter. Individually the difference is subtle. Together, three distinct voices emerge.
+
+**Sound at head height** (`+ HEAD_HEIGHT`). The PannerNode is positioned at mouth level so the sound appears to come from where you'd expect a person's voice, not from their feet.
+
+---
+
+## 8. Ambient Music: LFO Modulation and Detuning
+
+### The Am7 Chord
+
+The ambient pad uses an A minor seventh voicing: A, E, G, A, B, E across two octaves. Four properties make this ideal for ambient underscore:
+
+- **Minor quality** — slightly melancholic, introspective, never aggressive
+- **Open voicing** — wide intervals avoid a cluttered or busy feel
+- **Seventh (G)** — adds harmonic color without demanding resolution
+- **No leading tone** — doesn't pull toward any destination chord, just floats
+
+### Detuning: Physics of Warmth
+
+Each oscillator is detuned by 0–3 cents:
+
+```javascript
+const tones = [
+  [110.00,  0],   // A2 — perfectly in tune
+  [164.81,  2],   // E3 — 2 cents sharp
+  [196.00, -2],   // G3 — 2 cents flat
+  [220.00,  1],   // A3 — 1 cent sharp
+  [246.94, -3],   // B3 — 3 cents flat
+  [329.63,  3],   // E4 — 3 cents sharp
+]
+```
+
+**Why does detuning sound warm?** When two oscillators are slightly out of tune, they produce **beating** — periodic amplitude fluctuations at the frequency of their pitch difference. Two oscillators 2 cents apart at 220Hz beat at approximately 0.26 Hz — one slow pulse every ~4 seconds. This gentle pulsing makes the sound feel alive rather than static and digital. It is the same physics that makes a chorus pedal, a vintage Mellotron, or a pipe organ with multiple pipes per note sound "warm." One cent = 1/100 of a semitone, so 3 cents is an interval so small it's nearly imperceptible as a pitch difference but clearly audible as beating.
+
+### LFO Tremolo
 
 ```javascript
 const lfo = ctx.createOscillator()
-lfo.frequency.value = 0.07   // cycles every ~14 seconds
+lfo.type = 'sine'
+lfo.frequency.value = 0.04   // one cycle every 25 seconds
 
 const lfoGain = ctx.createGain()
-lfoGain.gain.value = 0.04    // LFO swings the master gain by ±0.04
+lfoGain.gain.value = volume * 0.55   // swell adds 55% of base volume at peak
 
 lfo.connect(lfoGain)
-lfoGain.connect(master.gain)  // modulates the gain parameter directly
+lfoGain.connect(master.gain)   // ← connects to an AudioParam, not an audio input
 ```
 
-The master gain sits at 0.07 (base volume). The LFO at 0.07 Hz sweeps it between 0.03 and 0.11 over 14-second cycles. The result sounds like wind gusting — not static background noise.
+`lfoGain.connect(master.gain)` connects the LFO's output signal (a slowly varying number) to `master.gain`'s value. The LFO's output is added to the gain's base value each sample. The result: master volume oscillates gently at 0.04 Hz — one slow breath every 25 seconds. This is **tremolo** (amplitude modulation at sub-audible rate).
 
-This technique (connecting one audio node's output to another node's **parameter** rather than its audio input) is called **AudioParam modulation** and is one of the Web Audio API's most powerful features. It's how synthesizers produce vibrato, tremolo, filter sweeps, and complex effects without any JavaScript running per-sample.
+Connecting an audio signal to an `AudioParam` is one of the most powerful patterns in Web Audio. LFO→Gain = tremolo. LFO→OscillatorFrequency = vibrato. LFO→FilterFrequency = a sweeping "wah" effect. The same LFO technique appears in the wind system (`0.07 Hz`), the water opacity pulse in `Water.jsx` (`0.7 Hz`), and the day/night ambient light variation. The concept is universal: slow periodic modulation makes things feel alive.
 
 ---
 
-## How Footsteps Sync to the Camera Bob
+## 9. The Browser Security Model: User Gesture Requirement
 
-The head bob in `Player.jsx` uses a sine wave:
+Browsers block `AudioContext` creation and `ctx.resume()` unless inside a user-gesture event handler. This prevents websites from playing audio without permission.
+
+**What counts as a user gesture:** click/tap, keydown/keyup, pointer lock acquisition.
+
+**What does NOT count:** setTimeout, requestAnimationFrame, fetch callbacks, `useEffect` on page load.
 
 ```javascript
-camera.position.y = EYE_HEIGHT + Math.sin(bobTime) * amplitude
+// useAudio.js
+useEffect(() => {
+  if (!isLocked || initialized.current) return
+  initialized.current = true
+
+  // `isLocked` flipped to true because of a pointer-lock click.
+  // This effect fires in the same microtask tick as that click event.
+  // Browsers accept this as "inside a user gesture."
+  resumeAudioContext()
+
+  const windTimer  = setTimeout(() => startWind(0.06), 300)
+  const musicTimer = setTimeout(() => startAmbientMusic(0.035), 1200)
+  ...
+}, [isLocked])
 ```
 
-As `bobTime` accumulates, `Math.sin(bobTime)` oscillates between -1 and +1. **One full cycle** of the sine wave = one full stride (left foot + right foot).
+**The timing stagger matters.** 300ms: wind fades in after the click artifact settles. 1200ms: music starts after wind establishes the soundscape. The music's `linearRampToValueAtTime` fades it in over 5 more seconds. The result: silence → click → wind → music emerging — an atmospheric sequence that feels intentional rather than everything starting at once.
 
-A footstep happens when one foot strikes the ground — at the **bottom** of each half-cycle. The sine wave crosses zero twice per cycle: once going downward (positive → negative), once going upward (negative → positive). Each crossing corresponds to one foot hitting the ground.
+---
 
-```
-sin(bobTime)
-     │
-  1  ┤    ╭──╮                ╭──╮
-     │   ╯    ╰              ╯    ╰
-  0  ┤──╯──────╰────────────╯──────╰── ← zero crossings here
-     │          ╰─╮        ╯
- -1  ┤             ╰──────╯
-     │
-     └────────────────────────────────
-          ↑         ↑
-        left      right
-        foot       foot
-```
+## 10. Architecture: The Singleton AudioContext
 
-In `Player.jsx`'s `useFrame`, we store the previous frame's sine value and check for sign changes:
+`AudioManager.js` exports functions, not a class. The AudioContext is a module-level variable:
 
 ```javascript
-const sinNow = Math.sin(bobTime.current)
-const sinWas = prevSinVal.current
+let ctx = null
 
-if (sinWas >= 0 && sinNow < 0) playFootstep('grass', 0.35)  // + → − : left foot
-if (sinWas <  0 && sinNow >= 0) playFootstep('grass', 0.35) // − → + : right foot
-
-prevSinVal.current = sinNow
+function getCtx() {
+  if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)()
+  if (ctx.state === 'suspended') ctx.resume()
+  return ctx
+}
 ```
 
-This approach automatically handles any bob frequency — walking or sprinting — because it detects sign changes rather than specific time intervals. It's also frame-rate independent: even if a frame is dropped, the detection catches up on the next frame.
+**Why a singleton?** Browsers limit the number of AudioContexts per page (typically 6). Two contexts cannot share nodes or a clock. One context for the entire application is the correct architecture.
+
+**Why lazy creation?** The browser blocks `new AudioContext()` before a user gesture. Making it a module-level constant would throw immediately on import. Lazy creation defers construction to the first `getCtx()` call, which happens inside `resumeAudioContext()` from `useAudio.js`, which only runs on pointer-lock click.
+
+**Why `ctx.resume()` on every call?** Browsers automatically suspend the AudioContext when a tab loses focus. `getCtx()` resumes it defensively on every call. The cost of calling `resume()` on an already-running context is negligible.
+
+**Why `window.webkitAudioContext`?** Older Safari versions used a prefixed name. The `|| window.webkitAudioContext` fallback provides compatibility without needing a polyfill library.
 
 ---
 
-## Data Flow: From Keyboard to Speaker
+## 11. Exercises
 
-```
-[Keyboard: W held]
-       │
-  useKeyboard ref updated
-       │
-  Player.jsx useFrame fires (every frame, ~60/s)
-       │
-  bobTime accumulates → sin(bobTime) computed
-       │
-  Zero crossing detected?
-       │ yes
-  playFootstep('grass', 0.35)
-       │
-  AudioManager.js creates nodes:
-    - NoiseBuffer → BandpassFilter → LowpassFilter → GainNode → destination
-       │
-  GainNode envelope plays out over 100ms
-       │
-  [Speaker: footstep thud]
-```
+Work through these with the browser's developer tools open — Firefox's Audio tab shows a live view of the Web Audio node graph while the game is running.
 
-The entire path from key press to speaker is under 2ms of compute time and produces no React re-renders, no garbage collection pressure, and no frame drops.
+**Exercise 1 — Wind volume.** In `useAudio.js`, change `startWind(0.06)` to `startWind(0.18)`. Lock in and listen. Try `0.02`. What volume level makes the environment feel alive without being distracting?
 
----
+**Exercise 2 — Music timing.** Change the music timer delay from `1200` to `5000`. Lock in and listen to the soundscape establish itself: silence → lock click → wind → (5 seconds) → music. Conversely, try `0` — does simultaneous wind+music feel right for this setting?
 
-## Files Changed in This Implementation
+**Exercise 3 — Major vs minor.** In `startAmbientMusic`, replace the `tones` array with an A major chord: `[[110,0],[164.81,2],[220,1],[329.63,3]]` (A, E, A, E — open major fifth). Lock in and walk around. How does major vs minor feel for a slightly ominous exploration game? Try `[[110,0],[138.59,-2],[165,1],[220,0]]` (Am with added 3rd below — darker).
 
-| File | What changed |
-|---|---|
-| `src/systems/AudioManager.js` | New — full procedural audio engine |
-| `src/hooks/useAudio.js` | New — initializes audio on first pointer lock |
-| `src/components/Player.jsx` | Added `playFootstep` import, `prevSinVal` ref, zero-crossing detection in `useFrame` |
-| `src/App.jsx` | Added `useAudio(locked)` call |
+**Exercise 4 — Fast murmur.** In `NPC.jsx`, change `8 + Math.random() * 14` to `1.5 + Math.random() * 2`. The NPCs murmur constantly. Walk close to The Gatekeeper, circle them slowly. Listen to the sound pan left and right in your headphones. This is HRTF doing real-time spatial audio.
+
+**Exercise 5 — Disable orientation.** In `AudioManager.js` `updateListener`, comment out the `forwardX/forwardY/forwardZ` assignments. Lock in and turn to face each NPC. Distance attenuation still works — volume changes as you walk toward/away. But the stereo panning is frozen — sounds don't shift left/right as you turn. Restore the orientation lines and feel the difference.
+
+**Exercise 6 — Footstep surface switch.** Find a boulder in the scene. Jump on top of it. While standing on the rock, walk around — you should hear a stone footstep sound. Walk off the rock back to grass — the sound switches back. This is the downward raycast surface detection in action.
+
+**Exercise 7 — Brown vs white wind.** In `startWind`, change `createNoiseBuffer(5, 'brown')` to `createNoiseBuffer(5, 'white')`. Lock in and listen. White noise bandpass-filtered still sounds like wind, but much harsher — industrial hiss rather than outdoor ambience. Change back. Now you understand why brown noise is preferred for natural ambient sounds.
+
+**Exercise 8 — PannerNode rolloff.** In `createPanner`, change `rolloffFactor` from `1.8` to `6.0`. Approach an NPC slowly. The sound appears much later (closer) and drops away faster when you step back. `rolloffFactor = 1.0` is physically accurate inverse-square. Higher values compress the audio "world" — sounds only exist at very close range.
+
+**Exercise 9 — LFO speed.** In `startAmbientMusic`, change `lfo.frequency.value = 0.04` to `0.5` (one swell per 2 seconds). Lock in and listen — the pad now "throbs" audibly, more like a horror cue than ambient exploration music. Change to `0.008` (one swell per 2 minutes) — the breathing is so slow you'll barely perceive it. The original `0.04` sits in the sweet spot between imperceptible and intrusive.
+
+**Exercise 10 — Add a new sound.** Write a `playPickup()` function in `AudioManager.js` that synthesizes a short ascending glissando: `OscillatorNode` with `type = 'sine'`, sweeping from 400Hz to 1200Hz over 150ms via `exponentialRampToValueAtTime`, with a fast attack and decay. Export it, import it in `Player.jsx`, and call it when F is pressed on any item (not just consumables). You've now written your first full custom synthesized sound from scratch.
 
 ---
 
-## What to Add Next in Audio
-
-| Feature | How |
-|---|---|
-| Stone/wood footsteps | Raycast down from player in `useFrame`, check surface type, pass to `playFootstep()` |
-| Jump sound | Add `playJump()` to `AudioManager.js` (frequency-swept oscillator), trigger on Space press |
-| Land sound | `playLand(intensity)` already in `AudioManager.js`, trigger when player hits ground |
-| Positional NPC sounds | Use `PannerNode` with 3D position, connected between source and destination |
-| Indoor wind reduction | Call `setWindVolume(0.01)` when inside a building bounding box |
-| Music | `OscillatorNode` sequences driven by a clock — or load an `.mp3` with `fetch` + `decodeAudioData` |
+*The Web Audio API is one of the most capable APIs in the browser and one of the most underused. Every concept here — signal graphs, synthesis, envelopes, LFOs, spatial audio — applies equally to professional DAWs, hardware synthesizers, and AAA game audio engines. The difference is just the API surface. The physics and the math are the same.*

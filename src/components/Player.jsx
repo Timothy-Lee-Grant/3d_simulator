@@ -42,10 +42,10 @@
 import { useRef, useEffect } from 'react'
 import { useFrame, useThree } from '@react-three/fiber'
 import { PointerLockControls } from '@react-three/drei'
-import { Vector3 } from 'three'
+import { Vector3, Raycaster } from 'three'
 import useKeyboard from '../hooks/useKeyboard'
 import useRaycast  from '../hooks/useRaycast'
-import { playFootstep }    from '../systems/AudioManager'
+import { playFootstep, playLand, playDialogueOpen, playItemPickup } from '../systems/AudioManager'
 import { resolveXZ }       from '../systems/collision'
 import { WORLD_COLLIDERS } from '../data/colliders'
 import { getTerrainHeight } from '../systems/terrain'
@@ -76,8 +76,15 @@ const EXHAUSTION_RECOVERY_THRESHOLD = 25
 const STAMINA_SYNC_INTERVAL  = 0.05   // 20 Hz
 const POSITION_SYNC_INTERVAL = 2.0
 
+// How often to re-run the downward surface-detection raycast (seconds).
+// 0.5s is imperceptible latency for footstep sound changes.
+const SURFACE_CHECK_INTERVAL = 0.5
+// Minimum fall speed (units/s) to trigger a landing thud.
+// Normal gravity over one frame (~0.37 u/s) is well below this.
+const LAND_VELOCITY_THRESHOLD = 3.5
+
 export default function Player({ onLock, onUnlock }) {
-  const { camera } = useThree()
+  const { camera, scene } = useThree()
   const keys       = useKeyboard()
   const isLocked   = useRef(false)
   const moveDir    = useRef(new Vector3())
@@ -105,12 +112,20 @@ export default function Player({ onLock, onUnlock }) {
   const staminaSyncAccum = useRef(0)
 
   // ── Physics refs (1.2) ───────────────────────────────────────────────────
-  // velocityY: vertical speed (positive = up, negative = falling)
-  // lastGroundedTime: clock.elapsedTime of the most recent grounded frame
-  // spacePressedLastFrame: edge detection for the Space key
   const velocityY            = useRef(0)
   const lastGroundedTime     = useRef(0)
   const spacePressedLastFrame = useRef(false)
+  // Landing detection: was the player airborne on the previous frame?
+  const wasAirborne          = useRef(false)
+
+  // ── Surface detection (5.2) ──────────────────────────────────────────────
+  // Downward raycast to determine what surface the player is standing on.
+  // Result is cached and only refreshed every SURFACE_CHECK_INTERVAL seconds
+  // to avoid raycasting against the entire scene 60×/sec.
+  const surfaceRef          = useRef('grass')   // current surface type
+  const surfaceCheckAccum   = useRef(0)
+  const downRaycaster       = useRef(new Raycaster())
+  const downVec             = useRef(new Vector3(0, -1, 0))
 
   // ── Position snapshot timer ───────────────────────────────────────────────
   const positionSyncAccum = useRef(0)
@@ -158,6 +173,7 @@ export default function Player({ onLock, onUnlock }) {
         const result = useItem()
         if (result) {
           useInteractionStore.getState().setItemFeedback(result.text)
+          if (result.consumed) playItemPickup()
         }
       }
     }
@@ -232,7 +248,7 @@ export default function Player({ onLock, onUnlock }) {
       const nodeKey = hasInteracted ? 'return_greeting' : 'greeting'
       openDialogue(lookingAt.id, nodeKey)
       addInteractedNPC(lookingAt.id)
-      // Release pointer lock so mouse is free to click response buttons
+      playDialogueOpen()
       document.exitPointerLock()
     }
     ePressedLastFrame.current = !!eDown
@@ -281,9 +297,18 @@ export default function Player({ onLock, onUnlock }) {
 
     // Ground snap — uses terrain height, not a fixed EYE_HEIGHT constant
     if (camera.position.y <= groundY) {
+      // Landing detection (5.2): if we were airborne and falling fast enough,
+      // play a thud. velocityY is still the pre-snap (falling) value here.
+      const fallSpeed = -velocityY.current   // positive when falling
+      if (wasAirborne.current && fallSpeed > LAND_VELOCITY_THRESHOLD) {
+        playLand(Math.min(1.0, fallSpeed / JUMP_VELOCITY))
+      }
       camera.position.y = groundY
       velocityY.current = 0
     }
+
+    // Track airborne state for the NEXT frame's landing detection
+    wasAirborne.current = camera.position.y > groundY + 0.05
 
     // ── Head bob (only while grounded and moving) ────────────────────────
     if (moving && camera.position.y <= groundY + 0.01) {
@@ -299,13 +324,40 @@ export default function Player({ onLock, onUnlock }) {
       }
     }
 
+    // ── Surface detection (5.2) ──────────────────────────────────────────
+    // Raycast straight down from the player every SURFACE_CHECK_INTERVAL
+    // seconds. Walk up the hit object's parent chain to find the named group
+    // (e.g. 'buildings', 'rocks') and map it to a footstep surface type.
+    surfaceCheckAccum.current += delta
+    if (surfaceCheckAccum.current >= SURFACE_CHECK_INTERVAL) {
+      surfaceCheckAccum.current = 0
+
+      downRaycaster.current.set(camera.position, downVec.current)
+      const hits = downRaycaster.current.intersectObjects(scene.children, true)
+
+      // Walk up parent chain to find a named group
+      let surface = 'grass'
+      for (const hit of hits) {
+        if (hit.distance > 8) break    // too far below — shouldn't happen normally
+        let obj = hit.object
+        while (obj) {
+          const n = obj.name
+          if (n === 'buildings' || n === 'landmark') { surface = 'stone'; break }
+          if (n === 'rocks')                          { surface = 'stone'; break }
+          obj = obj.parent
+        }
+        break   // only care about the nearest hit
+      }
+      surfaceRef.current = surface
+    }
+
     // ── Footstep audio ───────────────────────────────────────────────────
     if (moving && camera.position.y <= groundY + 0.01) {
       const sinNow   = Math.sin(bobTime.current)
       const crossedDown = prevSinVal.current >= 0 && sinNow < 0
       const crossedUp   = prevSinVal.current <  0 && sinNow >= 0
       if (crossedDown || crossedUp) {
-        playFootstep('grass', sprintActive ? 0.55 : 0.35)
+        playFootstep(surfaceRef.current, sprintActive ? 0.55 : 0.35)
         stepFoot.current = stepFoot.current === 'left' ? 'right' : 'left'
       }
       prevSinVal.current = sinNow

@@ -19,6 +19,8 @@ import Overlay        from './components/Overlay'
 import DayNightCycle  from './components/DayNightCycle'  // 4.3 — animated sky + lights
 import Water          from './components/Water'           // 4.4 — animated lake surfaces
 import Level          from './components/Level'           // 4.1 — JSON-driven NPCs + triggers
+// ── Phase 5 additions ─────────────────────────────────────────────────────
+import AudioBridge    from './components/AudioBridge'    // 5.1 — syncs spatial audio listener
 
 /**
  * App — root component. Canvas setup, pointer-lock wiring, scene assembly.
@@ -180,6 +182,8 @@ export default function App() {
         {/* ── Canvas bridges ────────────────────────────────────────── */}
         <LockBridge onReady={handleReady} />
         <CameraSync />
+        {/* AudioBridge: updates Web Audio listener position/orientation each frame */}
+        <AudioBridge />
         <Stats />
       </Canvas>
 

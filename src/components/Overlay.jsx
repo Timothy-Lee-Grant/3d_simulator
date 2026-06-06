@@ -52,6 +52,7 @@ import { useGameStore }        from '../store/useGameStore'
 import { useWorldStore }       from '../store/useWorldStore'
 import { DIALOGUE }            from '../data/dialogue'
 import { requestLock }         from '../systems/pointerLock'
+import { playUIClick, playDialogueOpen, playItemPickup } from '../systems/AudioManager'
 
 const FEEDBACK_DURATION = 2200   // ms before interaction message fades
 const COMPASS_WIDTH     = 200    // px — visible window of the compass strip
@@ -408,8 +409,8 @@ function DialoguePanel({ activeDialogue }) {
   if (!node) return null
 
   const handleResponse = (next) => {
+    playUIClick()
     if (next === null) {
-      // Still inside the click handler = user gesture → pointer lock allowed
       requestLock()
     }
     advanceDialogue(next)

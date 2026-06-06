@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { resumeAudioContext, startWind } from '../systems/AudioManager'
+import { resumeAudioContext, startWind, startAmbientMusic } from '../systems/AudioManager'
 
 /**
  * useAudio — initializes the audio system when the game starts.
@@ -28,10 +28,14 @@ export default function useAudio(isLocked) {
 
     // Short delay lets the pointer-lock transition fully settle before
     // we start playing audio (avoids a click artifact on some browsers)
-    const timer = setTimeout(() => {
-      startWind(0.06)
-    }, 300)
+    const windTimer  = setTimeout(() => startWind(0.06), 300)
+    // Ambient music fades in slowly — start it a beat after the wind
+    // so the wind establishes the soundscape first
+    const musicTimer = setTimeout(() => startAmbientMusic(0.035), 1200)
 
-    return () => clearTimeout(timer)
+    return () => {
+      clearTimeout(windTimer)
+      clearTimeout(musicTimer)
+    }
   }, [isLocked])
 }
