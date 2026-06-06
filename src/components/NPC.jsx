@@ -1,150 +1,216 @@
 /**
- * NPC.jsx — a Human figure that the player can look at and interact with.
+ * NPC.jsx — Phase 6.2 update: drives Human's animation state
  *
- * Wraps Human.jsx and adds the interaction layer on top:
+ * Adds on top of the Phase 3–5 interaction layer:
  *
- *   1. REGISTRATION — on mount, the NPC's root group is registered with the
- *      interactables system so the raycaster in Player.jsx can find it.
- *      On unmount it's deregistered to prevent stale references.
+ *   4. ANIMATION STATE DRIVE — NPC now has a simple AI that randomly
+ *      switches between IDLE and WALK states. The walk-in-place animation
+ *      gives each character life without requiring pathfinding.
  *
- *   2. HIGHLIGHT RING — a thin glowing ring at the NPC's feet appears when the
- *      player looks at this NPC and is within interaction range. It fades out
- *      immediately when the player looks away. This is the standard "object is
- *      selectable" feedback pattern used in most 3D games.
+ *      State machine rules:
+ *        IDLE → WALK after idle_duration seconds (random 4–12s)
+ *        WALK → IDLE after walk_duration seconds (random 2–5s)
  *
- *      The ring uses MeshStandardMaterial with emissive colour so it glows even
- *      in shadow. The geometry is a thin TorusGeometry (ring shape).
+ *      The NPC also faces a slowly rotating direction while "walking" —
+ *      a subtle rotation that makes the pacing feel purposeful.
  *
- *   3. STORE SUBSCRIPTION — the component subscribes to `lookingAt` in the
- *      interaction store. When `lookingAt.id === npcId`, it's being targeted.
- *      This drives the highlight ring's visibility.
+ *   5. PATROL (optional prop) — if `patrolPoints` is provided as an array
+ *      of two [x,z] positions, the NPC actually moves between them along
+ *      the terrain surface. Demonstrates skeletal animation responding to
+ *      real world-space movement.
  *
- * ── Why a separate component instead of modifying Human.jsx? ─────────────
+ * ── Why drive animation from the NPC, not the Player? ───────────────────────
  *
- * Human.jsx is a pure rendering component — it takes position/rotation/phaseOffset
- * and produces geometry. It has no knowledge of game mechanics. Keeping it pure
- * means it can be reused for decorative background characters, cutscenes, or any
- * context where interaction is not needed.
+ * Human.jsx is a pure visual component — it only knows about posing itself.
+ * NPC.jsx is the AI/game-mechanic layer. Separating concerns means:
+ *   - Human can be reused for decoration, cutscenes, or player avatar
+ *   - The AI can be swapped without touching rendering code
+ *   - Multiple different AI controllers (guard patrol, random wander, scripted)
+ *     can all use the same Human visual component
  *
- * NPC.jsx is the game-mechanic wrapper. This separation of concerns follows the
- * Entity-Component pattern: Human is the visual component, NPC adds the behaviour.
+ * ── How patrol works ─────────────────────────────────────────────────────────
+ *
+ * NPC moves between patrolPoints[0] and patrolPoints[1] by lerping position
+ * each frame. The NPC group's Y rotation is set to face the travel direction.
+ * Terrain height is sampled at the current XZ each frame so the NPC stays
+ * on the ground surface as it moves.
+ *
+ * No pathfinding — NPCs walk in straight lines. Full pathfinding (navmesh,
+ * A* search) would be Phase 8+.
  */
 
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState } from 'react'
 import { useFrame } from '@react-three/fiber'
+import * as THREE from 'three'
 import { useInteractionStore } from '../store/useInteractionStore'
 import { registerInteractable, deregisterInteractable } from '../systems/interactables'
 import { getTerrainHeight } from '../systems/terrain'
 import { playNPCMurmur } from '../systems/AudioManager'
+import { ANIM } from '../systems/AnimationStateMachine'
 import Human from './Human'
 
-// How fast the highlight ring fades in/out (fraction of gap closed per frame at 60fps)
-const HIGHLIGHT_LERP = 0.18
+// ── Constants ─────────────────────────────────────────────────────────────────
 
-// Ring appearance
-const RING_RADIUS    = 0.55   // outer radius of the torus (matches Human shoulder width)
-const RING_TUBE      = 0.025  // tube radius (how thick the ring is)
+const HIGHLIGHT_LERP = 0.18
+const RING_RADIUS    = 0.55
+const RING_TUBE      = 0.025
 const RING_SEGMENTS  = 32
 const RING_COLOR     = '#88ccff'
 const RING_EMISSIVE  = '#4499ee'
-const RING_Y         = 0.02   // just above ground, avoids z-fighting with the floor
+const RING_Y         = 0.02
+const PATROL_SPEED   = 1.4   // world units per second
+
+// Per-NPC voice pitch
+const PITCH_SCALES = { npc_01: 0.92, npc_02: 1.08, npc_03: 0.85 }
+const HEAD_HEIGHT  = 1.62
+
+// ── NPC ───────────────────────────────────────────────────────────────────────
 
 /**
- * @param {string}               npcId        Unique id, e.g. 'npc_01'
- * @param {string}               name         Display name shown in the interaction prompt
- * @param {[number,number,number]} position   World position
- * @param {[number,number,number]} rotation   World rotation (Euler, radians)
- * @param {number}               phaseOffset  Passed through to Human's idle animation
+ * @param {string}                 npcId
+ * @param {string}                 name
+ * @param {[number,number,number]} position        World position (y snapped to terrain)
+ * @param {[number,number,number]} rotation        Initial world rotation
+ * @param {number}                 phaseOffset     Passed to Human idle animation
+ * @param {[[number,number],[number,number]]} [patrolPoints]
+ *   Optional. Two [x,z] pairs defining a patrol path. If provided the NPC
+ *   physically walks between them. If omitted, walk is walk-in-place.
  */
-// Per-NPC pitch scale — gives each character a subtly different voice
-const PITCH_SCALES = { npc_01: 0.92, npc_02: 1.08, npc_03: 0.85 }
-// Head height offset so murmurs come from the mouth, not the feet
-const HEAD_HEIGHT = 1.62
+export default function NPC({
+  npcId,
+  name,
+  position      = [0, 0, 0],
+  rotation      = [0, 0, 0],
+  phaseOffset   = 0,
+  patrolPoints  = null,
+}) {
+  // ── Terrain snap ───────────────────────────────────────────────────────
+  const groundY       = getTerrainHeight(position[0], position[2])
+  const basePosition  = useRef([position[0], groundY, position[2]])
 
-export default function NPC({ npcId, name, position = [0, 0, 0], rotation = [0, 0, 0], phaseOffset = 0 }) {
-  // Snap Y to terrain at this NPC's XZ position — the JSON stores y=0 as a placeholder
-  const groundY = getTerrainHeight(position[0], position[2])
-  const snappedPosition = [position[0], groundY, position[2]]
+  // ── Refs ───────────────────────────────────────────────────────────────
+  const rootRef       = useRef()
+  const ringRef       = useRef()
+  const highlightVal  = useRef(0)
+  const murmurTimer   = useRef(phaseOffset * 2.5 + 4 + Math.random() * 6)
 
-  // Root group — registered with the interactables system so the raycaster can hit it
-  const rootRef  = useRef()
-  // Ring mesh ref — animated opacity driven by highlight state
-  const ringRef  = useRef()
-  // Smooth highlight value: 0 = not highlighted, 1 = fully highlighted
-  const highlightVal = useRef(0)
+  // ── Animation state ────────────────────────────────────────────────────
+  // React state drives the animationState prop on Human — triggers re-render
+  // but only when state actually changes (every 2–12 seconds), not every frame.
+  const [animState, setAnimState] = useState(ANIM.IDLE)
 
-  // ── Murmur timer (5.1) ───────────────────────────────────────────────────
-  // Each NPC emits a quiet positional ambient sound on a random interval.
-  // Start at a staggered time so all three NPCs don't murmur simultaneously.
-  const murmurTimer = useRef(phaseOffset * 2.5 + 4 + Math.random() * 6)
+  // AI timer: how long to stay in current state before switching
+  const aiTimer = useRef(4 + Math.random() * 8)
 
-  // Read the interaction store — is this NPC currently targeted?
-  const lookingAt = useInteractionStore(state => state.lookingAt)
+  // Patrol: which point we're heading toward
+  const patrolTarget = useRef(1)   // index into patrolPoints
+
+  // ── Interaction store ──────────────────────────────────────────────────
+  const lookingAt  = useInteractionStore(state => state.lookingAt)
   const isTargeted = lookingAt?.id === npcId
 
-  // ── Register / deregister with the interactables system ──────────────────
+  // ── Register interactable ──────────────────────────────────────────────
   useEffect(() => {
     if (!rootRef.current) return
-
     registerInteractable(npcId, rootRef.current, { name })
-
     return () => deregisterInteractable(npcId)
-  // name could change if NPCs get dynamic names, so include it in deps
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [npcId, name])
 
-  // ── Animate highlight ring + ambient murmur ──────────────────────────────
+  // ── Per-frame logic ────────────────────────────────────────────────────
   useFrame((_, delta) => {
-    // ── Murmur timer (5.1) ───────────────────────────────────────────────
-    // Tick down; fire a positional murmur sound when it expires.
-    // Don't murmur during active dialogue — it would overlap spoken text.
+    const root = rootRef.current
+    if (!root) return
+
+    // ── AI state machine ─────────────────────────────────────────────
+    aiTimer.current -= delta
+    if (aiTimer.current <= 0) {
+      if (animState === ANIM.IDLE) {
+        setAnimState(ANIM.WALK)
+        aiTimer.current = 2 + Math.random() * 3      // walk for 2–5s
+      } else {
+        setAnimState(ANIM.IDLE)
+        aiTimer.current = 4 + Math.random() * 8      // idle for 4–12s
+      }
+    }
+
+    // ── Patrol movement ──────────────────────────────────────────────
+    if (patrolPoints && animState === ANIM.WALK) {
+      const target = patrolPoints[patrolTarget.current]
+      const tx = target[0]
+      const tz = target[1]
+
+      const cx = root.position.x
+      const cz = root.position.z
+
+      const dx   = tx - cx
+      const dz   = tz - cz
+      const dist = Math.sqrt(dx * dx + dz * dz)
+
+      if (dist < 0.2) {
+        // Reached target — flip to the other patrol point
+        patrolTarget.current = patrolTarget.current === 0 ? 1 : 0
+      } else {
+        // Move toward target
+        const speed = PATROL_SPEED * delta
+        const nx    = cx + (dx / dist) * speed
+        const nz    = cz + (dz / dist) * speed
+        const ny    = getTerrainHeight(nx, nz)
+
+        root.position.set(nx, ny, nz)
+
+        // Face the travel direction
+        root.rotation.y = Math.atan2(dx, dz)
+      }
+    }
+
+    // ── Murmur ───────────────────────────────────────────────────────
     murmurTimer.current -= delta
     if (murmurTimer.current <= 0) {
-      // Random interval 8–22 seconds keeps NPCs from feeling mechanical
       murmurTimer.current = 8 + Math.random() * 14
-      // Only play if no dialogue is open (avoid overlap with player interaction)
       if (!useInteractionStore.getState().activeDialogue) {
         const pitch = PITCH_SCALES[npcId] ?? 1.0
         playNPCMurmur(
-          snappedPosition[0],
-          snappedPosition[1] + HEAD_HEIGHT,
-          snappedPosition[2],
+          root.position.x,
+          root.position.y + HEAD_HEIGHT,
+          root.position.z,
           pitch,
         )
       }
     }
 
-    // ── Highlight ring ───────────────────────────────────────────────────
+    // ── Highlight ring ────────────────────────────────────────────────
     if (!ringRef.current) return
 
     const target = isTargeted ? 1 : 0
     highlightVal.current += (target - highlightVal.current) * HIGHLIGHT_LERP
 
-    const v = highlightVal.current
+    const v   = highlightVal.current
     const mat = ringRef.current.material
-
     ringRef.current.scale.setScalar(1 + v * 0.08)
-    mat.opacity          = v * 0.85
+    mat.opacity           = v * 0.85
     mat.emissiveIntensity = v * 2.5
   })
 
-  return (
-    // Root group — registered with interactables, raycasts will hit Human geometry inside
-    <group ref={rootRef} position={snappedPosition} rotation={rotation}>
+  // ── Render ─────────────────────────────────────────────────────────────
+  const [bx, , bz] = basePosition.current
+  const initY = getTerrainHeight(bx, bz)
 
-      {/* ── Human visual (the actual character geometry + idle animation) ── */}
-      {/* Position and rotation are handled by the root group above, so we
-          pass zeros here — Human's own groups handle world offset */}
+  return (
+    <group
+      ref={rootRef}
+      position={[bx, initY, bz]}
+      rotation={rotation}
+    >
+      {/* Human figure with animation state driven from AI */}
       <Human
         position={[0, 0, 0]}
         rotation={[0, 0, 0]}
         phaseOffset={phaseOffset}
+        animationState={animState}
       />
 
-      {/* ── Highlight ring at feet ──────────────────────────────────────── */}
-      {/* Torus lying flat on the ground (rotated -90° on X axis).
-          Uses MeshStandardMaterial for emissive glow support.
-          Starts fully transparent — animated by useFrame above. */}
+      {/* Highlight ring */}
       <mesh
         ref={ringRef}
         position={[0, RING_Y, 0]}
@@ -160,7 +226,6 @@ export default function NPC({ npcId, name, position = [0, 0, 0], rotation = [0, 
           depthWrite={false}
         />
       </mesh>
-
     </group>
   )
 }

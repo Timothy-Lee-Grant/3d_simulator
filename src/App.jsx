@@ -5,58 +5,54 @@ import useAudio from './hooks/useAudio'
 import { useGameStore } from './store/useGameStore'
 import { setLockFn } from './systems/pointerLock'
 
-import Player         from './components/Player'
-import World          from './components/World'
-import Buildings      from './components/Buildings'
-import Trees          from './components/Trees'
-import Rocks          from './components/Rocks'
-import Landmark       from './components/Landmark'
-import StreetLamps    from './components/StreetLamps'
-import Particles      from './components/Particles'
-import PostProcessing from './components/PostProcessing'
-import Overlay        from './components/Overlay'
+import Player          from './components/Player'
+import World           from './components/World'
+import Buildings       from './components/Buildings'
+import Landmark        from './components/Landmark'
+import StreetLamps     from './components/StreetLamps'
+import Particles       from './components/Particles'
+import PostProcessing  from './components/PostProcessing'
+import Overlay         from './components/Overlay'
 // ── Phase 4 additions ─────────────────────────────────────────────────────
-import DayNightCycle  from './components/DayNightCycle'  // 4.3 — animated sky + lights
-import Water          from './components/Water'           // 4.4 — animated lake surfaces
-import Level          from './components/Level'           // 4.1 — JSON-driven NPCs + triggers
+import DayNightCycle   from './components/DayNightCycle'  // 4.3 — animated sky + lights
+import Water           from './components/Water'           // 4.4 — animated lake surfaces
+import Level           from './components/Level'           // 4.1 — JSON-driven NPCs + triggers
 // ── Phase 5 additions ─────────────────────────────────────────────────────
-import AudioBridge    from './components/AudioBridge'    // 5.1 — syncs spatial audio listener
+import AudioBridge     from './components/AudioBridge'    // 5.1 — syncs spatial audio listener
+// ── Phase 6 additions ─────────────────────────────────────────────────────
+import InstancedForest from './components/InstancedForest' // 6.3 — 50 trees, 3 draw calls
+import InstancedRocks  from './components/InstancedRocks'  // 6.3 — 30 rocks, 1 draw call
+import GlowOrbs        from './components/GlowOrb'         // 6.4 — custom fresnel shader
+import GrassField      from './components/GrassField'      // 6.4 — wind vertex shader + instancing
 
 /**
  * App — root component. Canvas setup, pointer-lock wiring, scene assembly.
  *
  * ── Phase 4 changes ───────────────────────────────────────────────────────
  *
- * THREE THINGS replaced or added:
- *
  * 1. DayNightCycle replaces static <Sky> + hardcoded lights.
- *    The static `SUN_POSITION` constant and the three separate light tags
- *    (ambientLight, directionalLight, hemisphereLight) are gone. DayNightCycle
- *    owns all of them and animates them together via ref-mutation in useFrame.
- *    The fog colour is also animated — DayNightCycle mutates scene.fog.color
- *    in its useFrame loop.
- *
  * 2. Level replaces hardcoded <NPC> tags.
- *    The three hardcoded NPC placements are removed from App.jsx. Level.jsx
- *    reads level_01.json and renders them from data. It also runs trigger
- *    volume checks every frame, firing discoverArea() events as the player
- *    explores. Adding a new NPC now requires only a JSON edit.
+ * 3. <Water> — two animated lake planes.
  *
- * 3. <Water> is new — two animated lake planes placed in terrain depressions.
- *    Pure UV-scrolling; no geometry changes per frame.
+ * ── Phase 6 changes ───────────────────────────────────────────────────────
+ *
+ * 1. Trees → InstancedForest (6.3): 50 trees in 3 draw calls (was 24).
+ *    Per-instance color tinting + per-frame wind sway via matrix updates.
+ *
+ * 2. Rocks → InstancedRocks (6.3): 30 rocks in 1 draw call (was 5).
+ *
+ * 3. GlowOrbs (6.4): custom Fresnel GLSL shader. Each emits a point light.
+ *
+ * 4. GrassField (6.4): 2,000 grass blade instances with wind vertex shader.
+ *    Zero CPU work per frame after initial matrix setup.
  *
  * ── LockBridge ────────────────────────────────────────────────────────────
  *
- * A null-rendering component that lives inside Canvas and surfaces
- * requestPointerLock() to the App level via a callback. Necessary because
- * pointer lock must be called on the WebGL canvas DOM element — only
- * accessible from inside the Canvas context via useThree().gl.domElement.
+ * Surfaces requestPointerLock() from inside Canvas to the App level.
  *
  * ── CameraSync ────────────────────────────────────────────────────────────
  *
- * Throttled (20Hz) bridge from camera.rotation.y → Zustand store. The DOM
- * overlay's compass reads cameraYaw from the store. Throttling limits
- * compass-driven re-renders to 20/sec, which is imperceptible to humans.
+ * Throttled (20Hz) bridge: camera.rotation.y → Zustand store → DOM compass.
  */
 
 function LockBridge({ onReady }) {
@@ -145,33 +141,46 @@ export default function App() {
           onUnlock={() => setLocked(false)}
         />
 
-        {/* ── Static scene geometry ──────────────────────────────────── */}
-        {/*
-          World now renders procedural terrain (Phase 4.2).
-          Trees and Rocks snap themselves to terrain height via getTerrainHeight().
-        */}
+        {/* ── Scene geometry ────────────────────────────────────────── */}
         <World />
         <Buildings />
-        <Trees />
-        <Rocks />
         <Landmark />
         <StreetLamps />
 
-        {/* ── Phase 4.4: Water ──────────────────────────────────────── */}
+        {/* ── Phase 6.3: Instanced rendering ────────────────────────── */}
         {/*
-          Two lake planes placed in terrain depressions. UV offsets scroll
-          in useFrame — no geometry updates, pure material animation.
+          InstancedForest: 50 trees in 3 draw calls (was ~24).
+          Wind sway via per-frame matrix updates on canopy instances.
+          Replaces Trees.jsx.
         */}
+        <InstancedForest />
+
+        {/*
+          InstancedRocks: 30 rocks in 1 draw call (was 5).
+          Static instance matrices — rocks don't move.
+          Replaces Rocks.jsx.
+        */}
+        <InstancedRocks />
+
+        {/* ── Phase 4.4: Water ──────────────────────────────────────── */}
         <Water />
 
-        {/* ── Phase 4.1: Level system ───────────────────────────────── */}
-        {/*
-          Reads level_01.json and renders:
-            - NPCs (replacing the three hardcoded <NPC> tags that were here)
-            - Trigger volumes (proximity zones that fire discoverArea events)
-          To add a new NPC: edit public/levels/level_01.json, no code change.
-        */}
+        {/* ── Phase 4.1: Level system (NPCs + triggers) ────────────── */}
         <Level />
+
+        {/* ── Phase 6.4: Custom GLSL shaders ────────────────────────── */}
+        {/*
+          GlowOrbs: three floating artifact orbs with custom Fresnel shader.
+          Each orb adds a colored point light to the scene.
+        */}
+        <GlowOrbs />
+
+        {/*
+          GrassField: 2,000 instanced grass blades.
+          Wind displacement runs entirely in the vertex shader — zero CPU
+          work per frame after initial setup.
+        */}
+        <GrassField />
 
         {/* ── Particles ─────────────────────────────────────────────── */}
         <Particles />
