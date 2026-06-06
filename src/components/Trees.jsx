@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import * as THREE from 'three'
 import { getTexture } from '../systems/TextureGenerator'
+import { getTerrainHeight } from '../systems/terrain'
 
 /**
  * Trees — cylinder trunk + two overlapping sphere canopies.
@@ -76,8 +77,10 @@ function useTreeMaterials() {
 // ── Tree component ────────────────────────────────────────────────────────
 
 function Tree({ position: [x, z], barkMat, leafMat1, leafMat2 }) {
+  // Snap to terrain so trees grow out of the actual ground, not thin air
+  const groundY = getTerrainHeight(x, z)
   return (
-    <group position={[x, 0, z]}>
+    <group position={[x, groundY, z]}>
       {/* Trunk */}
       <mesh position={[0, 0.9, 0]} castShadow receiveShadow material={barkMat}>
         <cylinderGeometry args={[0.2, 0.24, 1.8, 10]} />

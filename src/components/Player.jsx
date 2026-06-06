@@ -48,6 +48,7 @@ import useRaycast  from '../hooks/useRaycast'
 import { playFootstep }    from '../systems/AudioManager'
 import { resolveXZ }       from '../systems/collision'
 import { WORLD_COLLIDERS } from '../data/colliders'
+import { getTerrainHeight } from '../systems/terrain'
 import { DIALOGUE }        from '../data/dialogue'
 import { useInteractionStore } from '../store/useInteractionStore'
 import { useGameStore }        from '../store/useGameStore'
@@ -258,8 +259,12 @@ export default function Player({ onLock, onUnlock }) {
 
     // ── Physics: gravity and jumping (1.2) ──────────────────────────────
 
+    // Ground height at current XZ position — accounts for terrain slope.
+    // The player's eye is EYE_HEIGHT above the terrain surface.
+    const groundY = getTerrainHeight(camera.position.x, camera.position.z) + EYE_HEIGHT
+
     // Track last grounded time for coyote time calculation
-    const isGrounded = camera.position.y <= EYE_HEIGHT + 0.01
+    const isGrounded = camera.position.y <= groundY + 0.01
     if (isGrounded) lastGroundedTime.current = clock.elapsedTime
 
     // Jump — allowed while grounded OR within the coyote time window
@@ -274,28 +279,28 @@ export default function Player({ onLock, onUnlock }) {
     velocityY.current -= GRAVITY * delta
     camera.position.y += velocityY.current * delta
 
-    // Ground snap
-    if (camera.position.y <= EYE_HEIGHT) {
-      camera.position.y = EYE_HEIGHT
+    // Ground snap — uses terrain height, not a fixed EYE_HEIGHT constant
+    if (camera.position.y <= groundY) {
+      camera.position.y = groundY
       velocityY.current = 0
     }
 
     // ── Head bob (only while grounded and moving) ────────────────────────
-    if (moving && camera.position.y <= EYE_HEIGHT + 0.01) {
+    if (moving && camera.position.y <= groundY + 0.01) {
       const freq = sprintActive ? BOB_SPRINT_FREQ : BOB_WALK_FREQ
       bobTime.current += delta * freq
-      camera.position.y = EYE_HEIGHT + Math.sin(bobTime.current) * BOB_AMPLITUDE
+      camera.position.y = groundY + Math.sin(bobTime.current) * BOB_AMPLITUDE
     } else if (!moving) {
       bobTime.current  = 0
       prevSinVal.current = 0
       // Smoothly return to eye height when not moving (only while grounded)
-      if (camera.position.y <= EYE_HEIGHT + BOB_AMPLITUDE * 2) {
-        camera.position.y += (EYE_HEIGHT - camera.position.y) * 0.15
+      if (camera.position.y <= groundY + BOB_AMPLITUDE * 2) {
+        camera.position.y += (groundY - camera.position.y) * 0.15
       }
     }
 
     // ── Footstep audio ───────────────────────────────────────────────────
-    if (moving && camera.position.y <= EYE_HEIGHT + 0.01) {
+    if (moving && camera.position.y <= groundY + 0.01) {
       const sinNow   = Math.sin(bobTime.current)
       const crossedDown = prevSinVal.current >= 0 && sinNow < 0
       const crossedUp   = prevSinVal.current <  0 && sinNow >= 0

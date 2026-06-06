@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import * as THREE from 'three'
 import { getTexture } from '../systems/TextureGenerator'
+import { getTerrainHeight } from '../systems/terrain'
 
 /**
  * Rocks — sphere boulders on the ground.
@@ -45,8 +46,10 @@ function useRockMaterial() {
 }
 
 function Rock({ pos: [x, z], radius, material }) {
+  // Embed rock base in terrain so boulders sit on the ground, not hover above it
+  const groundY = getTerrainHeight(x, z)
   return (
-    <mesh position={[x, radius, z]} castShadow material={material}>
+    <mesh position={[x, groundY + radius * 0.7, z]} castShadow material={material}>
       <sphereGeometry args={[radius, 10, 7]} />
     </mesh>
   )

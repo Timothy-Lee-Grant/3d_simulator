@@ -490,6 +490,52 @@ function stoneRoughness(px, py, size) {
   return 0.78 + fbm(px / size * 10, py / size * 10, 2) * 0.10
 }
 
+// ── Water ─────────────────────────────────────────────────────────────────
+//
+// The water albedo is a deep teal-blue with subtle variation. The normal
+// map encodes crossed wave patterns that, when the texture is scrolled in
+// useFrame, create the illusion of moving ripples on the surface without
+// any geometry animation.
+//
+// The height function is a superposition of two sinusoidal patterns at
+// different frequencies and angles — classic wave interference. Where the
+// two waves constructively interfere, the normal map peaks; where they
+// cancel, the normal map is flat. This produces a convincing ripple texture
+// that scrolls nicely in two directions simultaneously.
+
+function waterHeight(px, py, size) {
+  const nx = (px / size) * 8
+  const ny = (py / size) * 8
+  // Two crossing sine waves — interference pattern
+  const w1 = Math.sin(nx * 2.1 + ny * 0.8) * 0.5 + 0.5
+  const w2 = Math.sin(nx * 0.6 - ny * 2.4) * 0.5 + 0.5
+  return w1 * 0.6 + w2 * 0.4
+}
+
+function drawWater(ctx, w, h) {
+  const img = ctx.createImageData(w, h)
+  const d   = img.data
+
+  for (let py = 0; py < h; py++) {
+    for (let px = 0; px < w; px++) {
+      const nx = px / w
+      const ny = py / h
+      // Deep teal-blue base with subtle FBM variation
+      const n  = fbm(nx * 5, ny * 5, 3) * 0.5 + 0.5
+      const rv = Math.round(14  + n * 28)
+      const gv = Math.round(68  + n * 42)
+      const bv = Math.round(120 + n * 55)
+      const i  = (py * w + px) * 4
+      d[i]     = rv
+      d[i + 1] = gv
+      d[i + 2] = bv
+      d[i + 3] = 255
+    }
+  }
+
+  ctx.putImageData(img, 0, 0)
+}
+
 // ── Public API ────────────────────────────────────────────────────────────
 
 const TEXTURE_DEFS = {
@@ -500,6 +546,7 @@ const TEXTURE_DEFS = {
   bark:     { size: 256, drawFn: drawBark,     heightFn: barkHeight,     normalStrength: 5, roughnessFn: null              },
   leaves:   { size: 256, drawFn: drawLeaves,   heightFn: null,           normalStrength: 0, roughnessFn: null              },
   stone:    { size: 512, drawFn: drawStone,    heightFn: stoneHeight,    normalStrength: 7, roughnessFn: stoneRoughness    },
+  water:    { size: 512, drawFn: drawWater,    heightFn: waterHeight,    normalStrength: 4, roughnessFn: null              },
 }
 
 /**

@@ -1,0 +1,94 @@
+{
+  "_comment": "Level 01 — The Settlement. All scene entities are listed here. Level.jsx reads this file and renders the scene from data, separating content from code.",
+
+  "meta": {
+    "id":      "level_01",
+    "name":    "The Settlement",
+    "version": 1
+  },
+
+  "world": {
+    "spawnPoint": [0, 1.7, 0],
+    "fogDensity": 0.015,
+    "cycleSpeed": 1.0
+  },
+
+  "npcs": [
+    {
+      "id":          "npc_01",
+      "name":        "The Stranger",
+      "position":    [0,   0, -5],
+      "rotation":    [0, 3.14159, 0],
+      "phaseOffset": 0.0,
+      "dialogueKey": "npc_01"
+    },
+    {
+      "id":          "npc_02",
+      "name":        "The Wanderer",
+      "position":    [2.5, 0, -7],
+      "rotation":    [0, 4.08, 0],
+      "phaseOffset": 2.1,
+      "dialogueKey": "npc_02"
+    },
+    {
+      "id":          "npc_03",
+      "name":        "The Gatekeeper",
+      "position":    [-2,  0, -6],
+      "rotation":    [0, 2.51, 0],
+      "phaseOffset": 4.7,
+      "dialogueKey": "npc_03"
+    }
+  ],
+
+  "triggers": [
+    {
+      "id":       "area_settlement",
+      "label":    "The Settlement",
+      "position": [0, 0, -10],
+      "radius":   25,
+      "event":    "discover_area"
+    },
+    {
+      "id":       "area_east_road",
+      "label":    "The East Road",
+      "position": [30, 0, -12],
+      "radius":   15,
+      "event":    "discover_area"
+    },
+    {
+      "id":       "area_west_ridge",
+      "label":    "The West Ridge",
+      "position": [-40, 0, -25],
+      "radius":   18,
+      "event":    "discover_area"
+    },
+    {
+      "id":       "area_lake",
+      "label":    "The Lake",
+      "position": [-35, 0, -45],
+      "radius":   20,
+      "event":    "discover_area"
+    },
+    {
+      "id":       "area_far_lake",
+      "label":    "The Far Lake",
+      "position": [55, 0, -60],
+      "radius":   18,
+      "event":    "discover_area"
+    },
+    {
+      "id":       "area_northern_hills",
+      "label":    "The Northern Hills",
+      "position": [0, 0, -90],
+      "radius":   20,
+      "event":    "discover_area"
+    },
+    {
+      "id":       "area_obelisk",
+      "label":    "The Obelisk",
+      "position": [0, 0, -50],
+      "radius":   12,
+      "event":    "discover_area"
+    }
+  ]
+}

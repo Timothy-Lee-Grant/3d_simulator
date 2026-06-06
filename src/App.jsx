@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { Canvas, useThree, useFrame } from '@react-three/fiber'
-import { Sky, Environment, Stats } from '@react-three/drei'
+import { Environment, Stats } from '@react-three/drei'
 import useAudio from './hooks/useAudio'
 import { useGameStore } from './store/useGameStore'
 import { setLockFn } from './systems/pointerLock'
@@ -11,54 +11,70 @@ import Buildings      from './components/Buildings'
 import Trees          from './components/Trees'
 import Rocks          from './components/Rocks'
 import Landmark       from './components/Landmark'
-import NPC            from './components/NPC'
 import StreetLamps    from './components/StreetLamps'
 import Particles      from './components/Particles'
 import PostProcessing from './components/PostProcessing'
 import Overlay        from './components/Overlay'
-
-// Sun direction shared between the sky shader and the directional light.
-const SUN_POSITION = [60, 90, 40]
+// ── Phase 4 additions ─────────────────────────────────────────────────────
+import DayNightCycle  from './components/DayNightCycle'  // 4.3 — animated sky + lights
+import Water          from './components/Water'           // 4.4 — animated lake surfaces
+import Level          from './components/Level'           // 4.1 — JSON-driven NPCs + triggers
 
 /**
- * LockBridge — null-rendering component inside Canvas that surfaces
- * requestPointerLock() to the App via a callback.
+ * App — root component. Canvas setup, pointer-lock wiring, scene assembly.
+ *
+ * ── Phase 4 changes ───────────────────────────────────────────────────────
+ *
+ * THREE THINGS replaced or added:
+ *
+ * 1. DayNightCycle replaces static <Sky> + hardcoded lights.
+ *    The static `SUN_POSITION` constant and the three separate light tags
+ *    (ambientLight, directionalLight, hemisphereLight) are gone. DayNightCycle
+ *    owns all of them and animates them together via ref-mutation in useFrame.
+ *    The fog colour is also animated — DayNightCycle mutates scene.fog.color
+ *    in its useFrame loop.
+ *
+ * 2. Level replaces hardcoded <NPC> tags.
+ *    The three hardcoded NPC placements are removed from App.jsx. Level.jsx
+ *    reads level_01.json and renders them from data. It also runs trigger
+ *    volume checks every frame, firing discoverArea() events as the player
+ *    explores. Adding a new NPC now requires only a JSON edit.
+ *
+ * 3. <Water> is new — two animated lake planes placed in terrain depressions.
+ *    Pure UV-scrolling; no geometry changes per frame.
+ *
+ * ── LockBridge ────────────────────────────────────────────────────────────
+ *
+ * A null-rendering component that lives inside Canvas and surfaces
+ * requestPointerLock() to the App level via a callback. Necessary because
+ * pointer lock must be called on the WebGL canvas DOM element — only
+ * accessible from inside the Canvas context via useThree().gl.domElement.
+ *
+ * ── CameraSync ────────────────────────────────────────────────────────────
+ *
+ * Throttled (20Hz) bridge from camera.rotation.y → Zustand store. The DOM
+ * overlay's compass reads cameraYaw from the store. Throttling limits
+ * compass-driven re-renders to 20/sec, which is imperceptible to humans.
  */
+
 function LockBridge({ onReady }) {
   const { gl } = useThree()
   useEffect(() => {
     const fn = () => gl.domElement.requestPointerLock()
     onReady(fn)
-    // Register with the module so Overlay's dialogue close can re-lock without prop drilling
     setLockFn(fn)
   }, [gl, onReady])
   return null
 }
 
-/**
- * CameraSync — reads camera.rotation.y every frame and syncs it to
- * useGameStore at ~20Hz so the Overlay's compass stays up to date.
- *
- * ── Why throttled? ────────────────────────────────────────────────────────
- * setCameraYaw triggers a re-render of any Overlay component subscribed to
- * cameraYaw. At 60Hz this would be one re-render per frame — acceptable, but
- * wasteful for a compass that only needs to update 15-20 times per second.
- * The 50ms accumulator limits re-renders to 20/sec (fine for smooth compass
- * animation since the transition is handled by CSS).
- *
- * ── Why inside Canvas? ────────────────────────────────────────────────────
- * useFrame and useThree() only work inside the R3F Canvas context. CameraSync
- * has no visible output — it's a null component that bridges Canvas state to
- * the Zustand store, which the DOM Overlay can then read.
- */
 function CameraSync() {
-  const { camera }     = useThree()
-  const setCameraYaw   = useGameStore(state => state.setCameraYaw)
-  const accumRef       = useRef(0)
+  const { camera }   = useThree()
+  const setCameraYaw = useGameStore(state => state.setCameraYaw)
+  const accumRef     = useRef(0)
 
   useFrame((_, delta) => {
     accumRef.current += delta
-    if (accumRef.current >= 0.05) {          // sync at 20Hz
+    if (accumRef.current >= 0.05) {
       setCameraYaw(camera.rotation.y)
       accumRef.current = 0
     }
@@ -73,10 +89,6 @@ export default function App() {
 
   useAudio(locked)
 
-  // ── Seed inventory with starter items ────────────────────────────────────
-  // Items are added once on mount via getState() (no subscription needed).
-  // These give the HUD quick bar something to show on first load.
-  // Phase 3.5 will replace this with items placed in the scene world.
   useEffect(() => {
     const { pickUpItem } = useGameStore.getState()
     pickUpItem({ id: 'item_key',  name: 'Ancient Key',  type: 'key',        color: '#f59e0b', description: 'A heavy iron key of unknown origin. It opens something — but what?' })
@@ -84,10 +96,7 @@ export default function App() {
     pickUpItem({ id: 'item_herb', name: 'Healing Herb', type: 'consumable', color: '#22c55e', description: 'Smells of pine. Press F to use — restores 30 HP.', healAmount: 30 })
   }, [])
 
-  const handleReady = useCallback((fn) => {
-    lockFn.current = fn
-  }, [])
-
+  const handleReady = useCallback((fn) => { lockFn.current = fn }, [])
   const handleStart = () => lockFn.current?.()
 
   return (
@@ -98,40 +107,35 @@ export default function App() {
         camera={{ fov: 75, near: 0.1, far: 500, position: [0, 1.7, 0] }}
         style={{ width: '100vw', height: '100vh', display: 'block' }}
       >
-        <color attach="background" args={['#a8c8e8']} />
+        {/*
+          Fallback background colour — visible for one frame before Sky renders,
+          and on very old GPUs that fail to load the sky shader.
+        */}
+        <color attach="background" args={['#8ab4cc']} />
 
-        {/* ── Sky ───────────────────────────────────────────────────── */}
-        <Sky
-          sunPosition={SUN_POSITION}
-          turbidity={7}
-          rayleigh={0.6}
-          mieCoefficient={0.006}
-          mieDirectionalG={0.82}
-        />
-
-        {/* ── Environment map (indirect lighting + reflections) ─────── */}
+        {/*
+          Environment map — provides image-based lighting (IBL) for PBR
+          materials. Reflection probes and specular highlights on metallic
+          surfaces come from here. background={false} keeps it invisible;
+          only its lighting contribution is used.
+        */}
         <Environment preset="sunset" background={false} />
 
-        {/* ── Fog ───────────────────────────────────────────────────── */}
-        <fogExp2 attach="fog" args={['#c8d0d8', 0.015]} />
+        {/*
+          Fog — density set here; colour is animated by DayNightCycle via
+          scene.fog.color in its useFrame loop. The fog object must exist
+          before DayNightCycle mounts so scene.fog is non-null when the
+          first useFrame fires.
+        */}
+        <fogExp2 attach="fog" args={['#c0ccd8', 0.015]} />
 
-        {/* ── Lighting ──────────────────────────────────────────────── */}
-        <ambientLight color="#ffeedd" intensity={0.20} />
-        <directionalLight
-          color="#fff5e0"
-          intensity={1.3}
-          position={SUN_POSITION}
-          castShadow
-          shadow-mapSize-width={2048}
-          shadow-mapSize-height={2048}
-          shadow-camera-near={1}
-          shadow-camera-far={250}
-          shadow-camera-left={-60}
-          shadow-camera-right={60}
-          shadow-camera-top={60}
-          shadow-camera-bottom={-60}
-        />
-        <hemisphereLight args={['#b0c8e0', '#4a7c45', 0.25]} />
+        {/* ── Phase 4.3: Day/Night Cycle ────────────────────────────── */}
+        {/*
+          Owns: Sky shader, directionalLight (sun), ambientLight, hemisphereLight.
+          All are animated via refs — zero re-renders from this component.
+          Replaces the static SUN_POSITION + three separate light tags.
+        */}
+        <DayNightCycle />
 
         {/* ── Player ────────────────────────────────────────────────── */}
         <Player
@@ -139,7 +143,11 @@ export default function App() {
           onUnlock={() => setLocked(false)}
         />
 
-        {/* ── Scene objects ─────────────────────────────────────────── */}
+        {/* ── Static scene geometry ──────────────────────────────────── */}
+        {/*
+          World now renders procedural terrain (Phase 4.2).
+          Trees and Rocks snap themselves to terrain height via getTerrainHeight().
+        */}
         <World />
         <Buildings />
         <Trees />
@@ -147,10 +155,21 @@ export default function App() {
         <Landmark />
         <StreetLamps />
 
-        {/* ── NPCs ──────────────────────────────────────────────────── */}
-        <NPC npcId="npc_01" name="The Stranger"   position={[0,   0, -5]} rotation={[0, Math.PI,       0]} phaseOffset={0.0} />
-        <NPC npcId="npc_02" name="The Wanderer"   position={[2.5, 0, -7]} rotation={[0, Math.PI * 1.3, 0]} phaseOffset={2.1} />
-        <NPC npcId="npc_03" name="The Gatekeeper" position={[-2,  0, -6]} rotation={[0, Math.PI * 0.8, 0]} phaseOffset={4.7} />
+        {/* ── Phase 4.4: Water ──────────────────────────────────────── */}
+        {/*
+          Two lake planes placed in terrain depressions. UV offsets scroll
+          in useFrame — no geometry updates, pure material animation.
+        */}
+        <Water />
+
+        {/* ── Phase 4.1: Level system ───────────────────────────────── */}
+        {/*
+          Reads level_01.json and renders:
+            - NPCs (replacing the three hardcoded <NPC> tags that were here)
+            - Trigger volumes (proximity zones that fire discoverArea events)
+          To add a new NPC: edit public/levels/level_01.json, no code change.
+        */}
+        <Level />
 
         {/* ── Particles ─────────────────────────────────────────────── */}
         <Particles />
@@ -160,9 +179,7 @@ export default function App() {
 
         {/* ── Canvas bridges ────────────────────────────────────────── */}
         <LockBridge onReady={handleReady} />
-        {/* CameraSync writes camera.rotation.y → store at 20Hz for the compass */}
         <CameraSync />
-        {/* Stats overlay: FPS, frame time, memory — visible during development */}
         <Stats />
       </Canvas>
 
