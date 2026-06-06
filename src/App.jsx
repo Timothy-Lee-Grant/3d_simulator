@@ -1,8 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { Canvas, useThree, useFrame } from '@react-three/fiber'
-import { Sky, Environment } from '@react-three/drei'
+import { Sky, Environment, Stats } from '@react-three/drei'
 import useAudio from './hooks/useAudio'
 import { useGameStore } from './store/useGameStore'
+import { setLockFn } from './systems/pointerLock'
 
 import Player         from './components/Player'
 import World          from './components/World'
@@ -26,7 +27,10 @@ const SUN_POSITION = [60, 90, 40]
 function LockBridge({ onReady }) {
   const { gl } = useThree()
   useEffect(() => {
-    onReady(() => gl.domElement.requestPointerLock())
+    const fn = () => gl.domElement.requestPointerLock()
+    onReady(fn)
+    // Register with the module so Overlay's dialogue close can re-lock without prop drilling
+    setLockFn(fn)
   }, [gl, onReady])
   return null
 }
@@ -158,6 +162,8 @@ export default function App() {
         <LockBridge onReady={handleReady} />
         {/* CameraSync writes camera.rotation.y → store at 20Hz for the compass */}
         <CameraSync />
+        {/* Stats overlay: FPS, frame time, memory — visible during development */}
+        <Stats />
       </Canvas>
 
       {/* ── DOM overlay (start screen + HUD) ─────────────────────────── */}

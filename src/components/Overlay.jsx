@@ -6,13 +6,23 @@
  *
  * ── HUD Layout (locked state) ─────────────────────────────────────────────
  *
- *   [top-center]   Compass — cardinal direction strip, scrolls with camera
- *   [top-left]     Health bar + Stamina bar + NPC met counter
- *   [center]       Crosshair (turns blue when looking at an NPC)
- *   [above center] Interaction prompt — "[ E ] Inspect Name"
- *   [upper-center] Interaction feedback — "You greeted Name"
+ *   [top-center]    Compass — cardinal direction strip, scrolls with camera
+ *   [top-left]      Health bar + Stamina bar + NPC met counter
+ *   [center]        Crosshair (turns blue when looking at an NPC)
+ *   [above center]  Interaction prompt — "[ E ] Inspect Name"
+ *   [upper-center]  Interaction feedback — "You greeted Name"
  *   [bottom-center] Inventory quick bar — 5 slots, 1–5 to select
- *   [very bottom]  Control hints
+ *   [very bottom]   Control hints
+ *
+ * ── Dialogue panel (3.4) ──────────────────────────────────────────────────
+ *
+ *   When activeDialogue is not null, the DialoguePanel renders over the HUD.
+ *   Pointer lock is released when dialogue opens (so the mouse is free to
+ *   click response buttons). The start screen is suppressed while dialogue
+ *   is active so it doesn't appear behind the panel.
+ *
+ *   On dialogue close (next === null), requestLock() is called inside the
+ *   click handler (still within the user gesture) to re-acquire pointer lock.
  *
  * ── Compass bearing math ──────────────────────────────────────────────────
  *
@@ -33,20 +43,15 @@
  *
  * `equippedSlot` (0–4) lives in useGameStore. Player.jsx handles 1–5 keys
  * and calls equipSlot(). The Overlay just reads and displays — it never
- * writes to the store (display is read-only here).
- *
- * ── CSS transitions on bars ───────────────────────────────────────────────
- *
- * Bar fill widths are set via `width: ${pct}%` on an inline style. The
- * CSS `transition: width 0.15s linear` property makes the bars animate
- * smoothly even though React is just setting a new percentage value each
- * time the component re-renders (at ~20Hz from the store sync).
+ * writes to the store.
  */
 
 import { useState, useEffect } from 'react'
 import { useInteractionStore } from '../store/useInteractionStore'
 import { useGameStore }        from '../store/useGameStore'
 import { useWorldStore }       from '../store/useWorldStore'
+import { DIALOGUE }            from '../data/dialogue'
+import { requestLock }         from '../systems/pointerLock'
 
 const FEEDBACK_DURATION = 2200   // ms before interaction message fades
 const COMPASS_WIDTH     = 200    // px — visible window of the compass strip
@@ -67,25 +72,20 @@ const COMPASS_MARKERS = [
 ]
 
 function Compass({ yaw }) {
-  // Convert Three.js camera yaw to compass bearing (0–360°, clockwise from North)
   const bearing = ((-yaw * 180 / Math.PI) % 360 + 360) % 360
 
   const half        = COMPASS_WIDTH / 2
   const pxPerDegree = COMPASS_WIDTH / COMPASS_FOV
-  const cullPad     = 16   // px beyond the edge before a marker is removed
+  const cullPad     = 16
 
   return (
     <div style={cs.wrap}>
-      {/* Scrolling marker strip — clipped by parent overflow:hidden */}
       <div style={cs.strip}>
         {COMPASS_MARKERS.map(({ label, angle }) => {
-          // Angle of this marker relative to where the camera is facing.
-          // Normalized to −180…+180 so we can tell left vs right.
           let diff = angle - bearing
           if (diff >  180) diff -= 360
           if (diff < -180) diff += 360
 
-          // Skip if fully outside the visible window
           const x = half + diff * pxPerDegree
           if (x < -cullPad || x > COMPASS_WIDTH + cullPad) return null
 
@@ -94,7 +94,6 @@ function Compass({ yaw }) {
 
           return (
             <div key={label} style={{ ...cs.markerWrap, left: x }}>
-              {/* Tick line above the label */}
               <div style={{
                 ...cs.tick,
                 height:     isCardinal ? 7 : 4,
@@ -115,8 +114,6 @@ function Compass({ yaw }) {
           )
         })}
       </div>
-
-      {/* Fixed center chevron — always points down at the current bearing */}
       <div style={cs.centerMark} />
     </div>
   )
@@ -152,13 +149,8 @@ const cs = {
     transform:      'translateX(-50%)',
     fontFamily:     'monospace',
   },
-  tick: {
-    borderRadius: 1,
-  },
-  markerLabel: {
-    lineHeight: 1,
-    userSelect: 'none',
-  },
+  tick:        { borderRadius: 1 },
+  markerLabel: { lineHeight: 1, userSelect: 'none' },
   centerMark: {
     position:    'absolute',
     bottom:      4,
@@ -178,21 +170,17 @@ function StatBars({ health, maxHealth, stamina, maxStamina, isExhausted, metCoun
   const hpPct = Math.max(0, (health  / maxHealth)  * 100)
   const stPct = Math.max(0, (stamina / maxStamina) * 100)
 
-  const hpColor = hpPct > 50 ? '#4ade80'   // green
-               :  hpPct > 25 ? '#fb923c'   // orange
-               :               '#f87171'   // red
-
-  const stColor = isExhausted ? '#7f1d1d' : '#3b82f6'  // dark-red or blue
+  const hpColor = hpPct > 50 ? '#4ade80' : hpPct > 25 ? '#fb923c' : '#f87171'
+  const stColor = isExhausted ? '#7f1d1d' : '#3b82f6'
 
   return (
     <div style={sb.container}>
-
       {/* Health */}
       <div style={sb.row}>
         <span style={{ ...sb.icon, color: hpColor }}>♥</span>
         <div style={sb.track}>
           <div style={{ ...sb.fill, width: `${hpPct}%`, background: hpColor }} />
-          <div style={{ ...sb.glassSheen }} />
+          <div style={sb.glassSheen} />
         </div>
         <span style={sb.value}>{Math.ceil(health)}</span>
       </div>
@@ -222,7 +210,7 @@ function StatBars({ health, maxHealth, stamina, maxStamina, isExhausted, metCoun
 const sb = {
   container: {
     position:      'fixed',
-    top:           64,    // below compass
+    top:           64,
     left:          18,
     display:       'flex',
     flexDirection: 'column',
@@ -232,11 +220,7 @@ const sb = {
     fontFamily:    'monospace',
     userSelect:    'none',
   },
-  row: {
-    display:     'flex',
-    alignItems:  'center',
-    gap:         7,
-  },
+  row:    { display: 'flex', alignItems: 'center', gap: 7 },
   icon: {
     fontSize:  13,
     width:     14,
@@ -258,7 +242,6 @@ const sb = {
     borderRadius: 4,
     transition: 'width 0.12s linear, background 0.3s ease',
   },
-  // Subtle glass sheen over the fill
   glassSheen: {
     position:   'absolute',
     inset:      0,
@@ -289,9 +272,7 @@ const sb = {
     color:     'rgba(255,200,50,0.7)',
     letterSpacing: '0.04em',
   },
-  metLabel: {
-    color: 'rgba(136,204,255,0.65)',
-  },
+  metLabel: { color: 'rgba(136,204,255,0.65)' },
 }
 
 // ── Inventory quick bar ───────────────────────────────────────────────────────
@@ -306,26 +287,18 @@ function InventoryBar({ inventory, equippedSlot }) {
         return (
           <div key={i} style={{
             ...inv.slot,
-            borderColor: isActive
-              ? 'rgba(255,255,255,0.85)'
-              : 'rgba(255,255,255,0.18)',
-            background: isActive
-              ? 'rgba(255,255,255,0.09)'
-              : 'rgba(0,0,0,0.52)',
-            boxShadow: isActive
+            borderColor: isActive ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.18)',
+            background:  isActive ? 'rgba(255,255,255,0.09)' : 'rgba(0,0,0,0.52)',
+            boxShadow:   isActive
               ? '0 0 0 1px rgba(255,255,255,0.2), 0 0 12px rgba(255,255,255,0.15)'
               : 'none',
           }}>
-
-            {/* Slot number (top-right corner) */}
             <span style={{
               ...inv.keyHint,
               color: isActive ? 'rgba(255,255,255,0.7)' : 'rgba(255,255,255,0.3)',
             }}>
               {i + 1}
             </span>
-
-            {/* Item icon + name (if slot is filled) */}
             {item && (
               <div style={inv.itemContent}>
                 <div style={{ ...inv.iconSwatch, background: item.color || '#666' }} />
@@ -333,13 +306,10 @@ function InventoryBar({ inventory, equippedSlot }) {
                   ...inv.itemName,
                   color: isActive ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.5)',
                 }}>
-                  {/* First word only — keeps slots compact */}
                   {item.name.split(' ')[0]}
                 </span>
               </div>
             )}
-
-            {/* Active slot bottom indicator */}
             {isActive && <div style={inv.activeDot} />}
           </div>
         )
@@ -351,7 +321,7 @@ function InventoryBar({ inventory, equippedSlot }) {
 const inv = {
   bar: {
     position:       'fixed',
-    bottom:         54,    // above HUD hints row
+    bottom:         54,
     left:           '50%',
     transform:      'translateX(-50%)',
     display:        'flex',
@@ -361,17 +331,17 @@ const inv = {
     userSelect:     'none',
   },
   slot: {
-    position:     'relative',
-    width:        54,
-    height:       54,
-    border:       '1.5px solid',
-    borderRadius: 6,
-    display:      'flex',
+    position:      'relative',
+    width:         54,
+    height:        54,
+    border:        '1.5px solid',
+    borderRadius:  6,
+    display:       'flex',
     flexDirection: 'column',
-    alignItems:   'center',
-    justifyContent: 'center',
-    transition:   'border-color 0.1s ease, background 0.1s ease, box-shadow 0.1s ease',
-    fontFamily:   'monospace',
+    alignItems:    'center',
+    justifyContent:'center',
+    transition:    'border-color 0.1s ease, background 0.1s ease, box-shadow 0.1s ease',
+    fontFamily:    'monospace',
   },
   keyHint: {
     position:   'absolute',
@@ -416,12 +386,176 @@ const inv = {
   },
 }
 
+// ── Dialogue panel (3.4) ──────────────────────────────────────────────────────
+
+/**
+ * DialoguePanel — renders when activeDialogue is not null.
+ *
+ * Shows the NPC's current line of dialogue and a list of clickable responses.
+ * Clicking a response calls advanceDialogue(next):
+ *   - next is a string → navigate to that node
+ *   - next is null → close dialogue; requestLock() re-acquires pointer lock
+ *
+ * Keyboard: number keys 1–4 are wired in Player.jsx to the same actions.
+ */
+function DialoguePanel({ activeDialogue }) {
+  const advanceDialogue = useInteractionStore(state => state.advanceDialogue)
+
+  const { npcId, nodeKey } = activeDialogue
+  const node = DIALOGUE[npcId]?.[nodeKey]
+
+  // Guard against a missing node (shouldn't happen with correct data)
+  if (!node) return null
+
+  const handleResponse = (next) => {
+    if (next === null) {
+      // Still inside the click handler = user gesture → pointer lock allowed
+      requestLock()
+    }
+    advanceDialogue(next)
+  }
+
+  return (
+    <div style={dlg.overlay}>
+      <div style={dlg.panel}>
+        {/* NPC name */}
+        <div style={dlg.speaker}>{node.speaker}</div>
+
+        {/* Divider */}
+        <div style={dlg.divider} />
+
+        {/* NPC text */}
+        <p style={dlg.text}>{node.text}</p>
+
+        {/* Response options */}
+        <div style={dlg.responses}>
+          {node.responses.map((r, i) => (
+            <button
+              key={i}
+              style={dlg.responseBtn}
+              onClick={() => handleResponse(r.next)}
+              onMouseEnter={e => Object.assign(e.currentTarget.style, dlg.responseBtnHover)}
+              onMouseLeave={e => Object.assign(e.currentTarget.style, dlg.responseBtn)}
+            >
+              <span style={dlg.responseNum}>[{i + 1}]</span>
+              <span style={dlg.responseLabel}>{r.label}</span>
+            </button>
+          ))}
+        </div>
+
+        {/* Keyboard hint */}
+        <div style={dlg.keyHint}>number keys to select</div>
+      </div>
+    </div>
+  )
+}
+
+const dlg = {
+  // Full-screen backdrop — dims the scene but lets the HUD show beneath
+  overlay: {
+    position:   'fixed',
+    inset:      0,
+    display:    'flex',
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    paddingBottom: 80,
+    background: 'linear-gradient(to top, rgba(0,0,0,0.72) 0%, transparent 55%)',
+    pointerEvents: 'none',  // let click events pass to panel children
+    zIndex:     15,
+  },
+  panel: {
+    width:         560,
+    maxWidth:      '90vw',
+    background:    'rgba(6,10,20,0.94)',
+    border:        '1px solid rgba(100,160,255,0.22)',
+    borderRadius:  8,
+    padding:       '20px 24px 16px',
+    pointerEvents: 'auto',  // panel itself is interactive
+    boxShadow:     '0 0 0 1px rgba(0,0,0,0.5), 0 8px 40px rgba(0,0,0,0.8)',
+    fontFamily:    'monospace',
+    userSelect:    'none',
+  },
+  speaker: {
+    fontSize:      13,
+    fontWeight:    'bold',
+    letterSpacing: '0.08em',
+    color:         '#88ccff',
+    textTransform: 'uppercase',
+    marginBottom:  8,
+  },
+  divider: {
+    height:        1,
+    background:    'rgba(100,160,255,0.18)',
+    marginBottom:  14,
+  },
+  text: {
+    fontSize:      15,
+    color:         'rgba(255,255,255,0.88)',
+    lineHeight:    1.65,
+    margin:        '0 0 18px',
+    fontStyle:     'normal',
+  },
+  responses: {
+    display:       'flex',
+    flexDirection: 'column',
+    gap:           6,
+  },
+  responseBtn: {
+    display:       'flex',
+    alignItems:    'baseline',
+    gap:           10,
+    background:    'rgba(255,255,255,0.04)',
+    border:        '1px solid rgba(255,255,255,0.10)',
+    borderRadius:  5,
+    padding:       '8px 14px',
+    cursor:        'pointer',
+    textAlign:     'left',
+    transition:    'background 0.12s ease, border-color 0.12s ease',
+    color:         'rgba(255,255,255,0.75)',
+    fontFamily:    'monospace',
+    fontSize:      14,
+    width:         '100%',
+  },
+  responseBtnHover: {
+    background:    'rgba(100,160,255,0.12)',
+    border:        '1px solid rgba(100,160,255,0.35)',
+    borderRadius:  5,
+    padding:       '8px 14px',
+    cursor:        'pointer',
+    textAlign:     'left',
+    color:         'rgba(255,255,255,0.95)',
+    fontFamily:    'monospace',
+    fontSize:      14,
+    width:         '100%',
+    display:       'flex',
+    alignItems:    'baseline',
+    gap:           10,
+    transition:    'background 0.12s ease, border-color 0.12s ease',
+  },
+  responseNum: {
+    fontSize:      11,
+    color:         'rgba(100,160,255,0.7)',
+    flexShrink:    0,
+  },
+  responseLabel: {
+    flexGrow: 1,
+  },
+  keyHint: {
+    marginTop:     10,
+    fontSize:      10,
+    color:         'rgba(255,255,255,0.22)',
+    textAlign:     'right',
+    letterSpacing: '0.04em',
+  },
+}
+
 // ── Main Overlay export ───────────────────────────────────────────────────────
 
 export default function Overlay({ locked, onStart }) {
   // ── Store subscriptions ───────────────────────────────────────────────────
-  const lookingAt       = useInteractionStore(state => state.lookingAt)
-  const lastInteraction = useInteractionStore(state => state.lastInteraction)
+  const lookingAt        = useInteractionStore(state => state.lookingAt)
+  const lastInteraction  = useInteractionStore(state => state.lastInteraction)
+  const activeDialogue   = useInteractionStore(state => state.activeDialogue)
 
   const health      = useGameStore(state => state.health)
   const maxHealth   = useGameStore(state => state.maxHealth)
@@ -436,7 +570,6 @@ export default function Overlay({ locked, onStart }) {
 
   // ── Interaction feedback ──────────────────────────────────────────────────
   const [feedbackMsg, setFeedbackMsg] = useState(null)
-
   useEffect(() => {
     if (!lastInteraction) return
     setFeedbackMsg(`You greeted ${lastInteraction.name}`)
@@ -446,19 +579,21 @@ export default function Overlay({ locked, onStart }) {
 
   return (
     <>
-      {/* ── Start screen ─────────────────────────────────────────────── */}
-      {!locked && (
+      {/* ── Start screen ─────────────────────────────────────────────────
+          Hidden while dialogue is active so the panel isn't obscured. */}
+      {!locked && !activeDialogue && (
         <div onClick={onStart} style={sc.overlay}>
           <h1 style={sc.title}>3D Explorer</h1>
           <p style={sc.sub}>A first-person world — React Three Fiber</p>
 
           <div style={sc.keyGrid}>
-            <span style={sc.keyLabel}>W A S D</span><span style={sc.keyDesc}>Move</span>
-            <span style={sc.keyLabel}>Mouse</span>  <span style={sc.keyDesc}>Look around</span>
-            <span style={sc.keyLabel}>Shift</span>  <span style={sc.keyDesc}>Sprint (drains stamina)</span>
-            <span style={sc.keyLabel}>E</span>       <span style={sc.keyDesc}>Interact with NPCs</span>
-            <span style={sc.keyLabel}>1 – 5</span>   <span style={sc.keyDesc}>Select inventory slot</span>
-            <span style={sc.keyLabel}>ESC</span>     <span style={sc.keyDesc}>Pause / release mouse</span>
+            <span style={sc.keyLabel}>W A S D</span>  <span style={sc.keyDesc}>Move</span>
+            <span style={sc.keyLabel}>Space</span>     <span style={sc.keyDesc}>Jump</span>
+            <span style={sc.keyLabel}>Mouse</span>     <span style={sc.keyDesc}>Look around</span>
+            <span style={sc.keyLabel}>Shift</span>     <span style={sc.keyDesc}>Sprint (drains stamina)</span>
+            <span style={sc.keyLabel}>E</span>         <span style={sc.keyDesc}>Talk to NPCs</span>
+            <span style={sc.keyLabel}>1 – 5</span>     <span style={sc.keyDesc}>Select inventory slot</span>
+            <span style={sc.keyLabel}>ESC</span>       <span style={sc.keyDesc}>Pause / release mouse</span>
           </div>
 
           <div style={sc.cta}>Click anywhere to start</div>
@@ -468,12 +603,10 @@ export default function Overlay({ locked, onStart }) {
         </div>
       )}
 
-      {/* ── HUD (all elements below are only shown while locked) ──────── */}
+      {/* ── HUD (only shown while pointer-locked) ────────────────────── */}
 
-      {/* Compass */}
       {locked && <Compass yaw={cameraYaw} />}
 
-      {/* Stat bars */}
       {locked && (
         <StatBars
           health={health}
@@ -485,42 +618,43 @@ export default function Overlay({ locked, onStart }) {
         />
       )}
 
-      {/* Crosshair */}
-      {locked && (
+      {/* Crosshair — hidden while dialogue is open */}
+      {locked && !activeDialogue && (
         <div style={hud.crosshairWrap}>
           <div style={{ ...hud.chH, background: lookingAt ? '#88ccff' : 'rgba(255,255,255,0.85)' }} />
           <div style={{ ...hud.chV, background: lookingAt ? '#88ccff' : 'rgba(255,255,255,0.85)' }} />
         </div>
       )}
 
-      {/* Interaction prompt */}
-      {locked && (
+      {/* Interaction prompt — hidden while dialogue is open */}
+      {locked && !activeDialogue && (
         <div style={{
           ...hud.prompt,
           opacity:   lookingAt ? 1 : 0,
           transform: `translate(-50%, ${lookingAt ? 0 : 6}px)`,
         }}>
           <span style={hud.keyBadge}>E</span>
-          &nbsp;&nbsp;Inspect{lookingAt ? ` ${lookingAt.name}` : ''}
+          &nbsp;&nbsp;Talk{lookingAt ? ` to ${lookingAt.name}` : ''}
         </div>
       )}
 
       {/* Interaction feedback */}
-      {locked && feedbackMsg && (
+      {locked && feedbackMsg && !activeDialogue && (
         <div style={hud.feedback}>{feedbackMsg}</div>
       )}
 
-      {/* Inventory quick bar */}
       {locked && (
         <InventoryBar inventory={inventory} equippedSlot={equippedSlot} />
       )}
 
-      {/* HUD hint bar */}
       {locked && (
         <div style={hud.hints}>
-          WASD · Move &nbsp;|&nbsp; Shift · Sprint &nbsp;|&nbsp; E · Interact &nbsp;|&nbsp; 1–5 · Slot &nbsp;|&nbsp; ESC · Pause
+          WASD · Move &nbsp;|&nbsp; Space · Jump &nbsp;|&nbsp; Shift · Sprint &nbsp;|&nbsp; E · Talk &nbsp;|&nbsp; 1–5 · Slot &nbsp;|&nbsp; ESC · Pause
         </div>
       )}
+
+      {/* ── Dialogue panel (3.4) — renders regardless of lock state ─── */}
+      {activeDialogue && <DialoguePanel activeDialogue={activeDialogue} />}
     </>
   )
 }
@@ -535,7 +669,7 @@ const sc = {
     display:       'flex',
     flexDirection: 'column',
     alignItems:    'center',
-    justifyContent: 'center',
+    justifyContent:'center',
     gap:           12,
     cursor:        'pointer',
     zIndex:        20,
@@ -554,21 +688,14 @@ const sc = {
     margin:   0,
   },
   keyGrid: {
-    marginTop:            10,
-    display:              'grid',
-    gridTemplateColumns:  'auto auto',
-    gap:                  '7px 28px',
-    alignItems:           'baseline',
+    marginTop:           10,
+    display:             'grid',
+    gridTemplateColumns: 'auto auto',
+    gap:                 '7px 28px',
+    alignItems:          'baseline',
   },
-  keyLabel: {
-    color:     'rgba(255,255,255,0.9)',
-    fontSize:  13,
-    textAlign: 'right',
-  },
-  keyDesc: {
-    color:    'rgba(255,255,255,0.5)',
-    fontSize: 13,
-  },
+  keyLabel: { color: 'rgba(255,255,255,0.9)', fontSize: 13, textAlign: 'right' },
+  keyDesc:  { color: 'rgba(255,255,255,0.5)', fontSize: 13 },
   cta: {
     marginTop:     20,
     padding:       '10px 28px',
@@ -579,13 +706,13 @@ const sc = {
     letterSpacing: '0.05em',
   },
   escNote: {
-    marginTop: 10,
-    fontSize:  12,
-    color:     'rgba(255,255,255,0.3)',
-    textAlign: 'center',
-    maxWidth:  320,
+    marginTop:  10,
+    fontSize:   12,
+    color:      'rgba(255,255,255,0.3)',
+    textAlign:  'center',
+    maxWidth:   320,
     lineHeight: 1.5,
-    margin:    0,
+    margin:     0,
   },
 }
 
@@ -603,21 +730,21 @@ const hud = {
     zIndex:        10,
   },
   chH: {
-    position:  'absolute',
-    top:       '50%',
-    left:      0,
-    right:     0,
-    height:    2,
-    transform: 'translateY(-50%)',
+    position:   'absolute',
+    top:        '50%',
+    left:       0,
+    right:      0,
+    height:     2,
+    transform:  'translateY(-50%)',
     transition: 'background 0.12s ease',
   },
   chV: {
-    position:  'absolute',
-    left:      '50%',
-    top:       0,
-    bottom:    0,
-    width:     2,
-    transform: 'translateX(-50%)',
+    position:   'absolute',
+    left:       '50%',
+    top:        0,
+    bottom:     0,
+    width:      2,
+    transform:  'translateX(-50%)',
     transition: 'background 0.12s ease',
   },
   prompt: {

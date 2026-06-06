@@ -1,50 +1,80 @@
 /**
- * useInteractionStore — global interaction state via Zustand.
+ * useInteractionStore — global interaction and dialogue state.
  *
- * Two concerns:
+ * Three concerns:
  *
- * 1. LOOK-AT STATE  (updated every frame by the raycaster in Player.jsx)
- *    The player is continuously scanning the scene with a forward ray.
- *    When that ray hits a registered interactable within reach, `lookingAt`
- *    is set to a descriptor object. When nothing is in range, it's null.
- *    The Overlay reads this to decide whether to show the "Press E" prompt.
+ * 1. LOOK-AT STATE  (updated every frame by useRaycast.js)
+ *    When the player's crosshair ray hits a registered interactable within
+ *    interaction range, `lookingAt` describes the target. Null when nothing
+ *    is in range. The Overlay reads this to show the "Press E" prompt.
  *
  * 2. INTERACTION LOG  (appended when the player presses E)
- *    `lastInteraction` records what was last interacted with and when.
- *    The Overlay shows a brief on-screen message, then the HUD returns to normal.
+ *    `lastInteraction` records the most recent E press. Used for non-dialogue
+ *    interactables (future: doors, levers, items). For NPC interaction the
+ *    dialogue system takes over instead.
  *
- * Why Zustand here instead of React state?
- * The raycaster runs inside `useFrame` in Player.jsx (inside the Canvas).
- * The prompt is shown by Overlay.jsx (outside the Canvas, in the DOM).
- * These two components have no parent-child relationship, so lifting state
- * up would require threading it through App.jsx. Zustand lets both components
- * access the same store directly with zero prop drilling.
+ * 3. DIALOGUE STATE  (3.4 — NPC dialogue system)
+ *    `activeDialogue` tracks the current open conversation: which NPC and which
+ *    node in their tree the player is on. null when no dialogue is open.
+ *
+ *    Flow:
+ *      Player presses E on NPC
+ *        → openDialogue(npcId, nodeKey)  [Player.jsx]
+ *        → document.exitPointerLock()   [Player.jsx — frees mouse for clicking]
+ *      Player clicks a response
+ *        → advanceDialogue(next)         [Overlay.jsx DialoguePanel]
+ *        → if next === null: dialogue closes, requestLock() re-locks pointer
+ *
+ *    The Overlay's start screen is hidden while activeDialogue is not null,
+ *    so the dialogue panel renders on top of the HUD without the start screen
+ *    appearing (even though pointer lock was released).
  */
 
 import { create } from 'zustand'
 
 export const useInteractionStore = create((set) => ({
+
   // ── Look-at state ─────────────────────────────────────────────────────────
-  //
-  // Set to null when the player isn't looking at anything interactable,
-  // or to an object describing the target when they are.
   //
   // Shape: { id: string, name: string, distance: number } | null
   lookingAt: null,
-
   setLookingAt: (target) => set({ lookingAt: target }),
 
   // ── Interaction log ───────────────────────────────────────────────────────
   //
-  // Updated when the player presses E while looking at an interactable.
   // Shape: { id: string, name: string, time: number } | null
   lastInteraction: null,
-
   interact: (target) => set({
-    lastInteraction: {
-      id:   target.id,
-      name: target.name,
-      time: Date.now(),
-    }
+    lastInteraction: { id: target.id, name: target.name, time: Date.now() },
   }),
+
+  // ── Dialogue state ────────────────────────────────────────────────────────
+  //
+  // Shape: { npcId: string, nodeKey: string } | null
+  //
+  // `npcId`   — key into DIALOGUE (e.g. 'npc_01')
+  // `nodeKey` — key within that NPC's tree (e.g. 'greeting', 'identity')
+  activeDialogue: null,
+
+  /**
+   * Open dialogue for the given NPC, starting at the specified node.
+   * @param {string} npcId
+   * @param {string} [nodeKey='greeting']  Usually 'greeting' or 'return_greeting'
+   */
+  openDialogue: (npcId, nodeKey = 'greeting') =>
+    set({ activeDialogue: { npcId, nodeKey } }),
+
+  /**
+   * Navigate to the next dialogue node, or close dialogue if next is null.
+   * @param {string|null} nextKey
+   */
+  advanceDialogue: (nextKey) =>
+    set(state => ({
+      activeDialogue: nextKey
+        ? { ...state.activeDialogue, nodeKey: nextKey }
+        : null,
+    })),
+
+  /** Force-close dialogue (e.g. on ESC). */
+  closeDialogue: () => set({ activeDialogue: null }),
 }))
