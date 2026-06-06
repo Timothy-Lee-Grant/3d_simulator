@@ -22,6 +22,8 @@
 
 import { useState, useEffect } from 'react'
 import { useInteractionStore } from '../store/useInteractionStore'
+import { useGameStore } from '../store/useGameStore'
+import { useWorldStore } from '../store/useWorldStore'
 
 // How long the interaction feedback message stays on screen (ms)
 const FEEDBACK_DURATION = 2000
@@ -30,6 +32,19 @@ export default function Overlay({ locked, onStart }) {
   // ── Read interaction state ────────────────────────────────────────────────
   const lookingAt        = useInteractionStore(state => state.lookingAt)
   const lastInteraction  = useInteractionStore(state => state.lastInteraction)
+
+  // ── Read game state ───────────────────────────────────────────────────────
+  // Each selector subscribes to only its slice — other state changes don't
+  // cause this component to re-render.
+  const health      = useGameStore(state => state.health)
+  const maxHealth   = useGameStore(state => state.maxHealth)
+  const stamina     = useGameStore(state => state.stamina)
+  const maxStamina  = useGameStore(state => state.maxStamina)
+  const isExhausted = useGameStore(state => state.isExhausted)
+
+  // ── Read world state ──────────────────────────────────────────────────────
+  // Count how many unique NPCs have been met (shown in HUD as a small counter).
+  const metCount = useWorldStore(state => state.interactedNPCs.length)
 
   // ── Feedback message (shown briefly after pressing E) ────────────────────
   const [feedbackMsg, setFeedbackMsg] = useState(null)
@@ -85,6 +100,24 @@ export default function Overlay({ locked, onStart }) {
         </div>
       )}
 
+      {/* ── Health + Stamina bars (top-left) ─────────────────────────── */}
+      {/* Each bar is a fixed-width track with a coloured fill that animates
+          via CSS width transitions. The fill colour changes based on percentage:
+            Health:  green > 50%, orange 25–50%, red < 25%
+            Stamina: blue normally, dark-red when exhausted (sprint locked)
+          CSS transition on width gives smooth bar movement without React
+          state — the width is set directly from the current value. */}
+      {locked && (
+        <StatBars
+          health={health}
+          maxHealth={maxHealth}
+          stamina={stamina}
+          maxStamina={maxStamina}
+          isExhausted={isExhausted}
+          metCount={metCount}
+        />
+      )}
+
       {/* ── Interaction prompt ────────────────────────────────────────── */}
       {/* Shown when the player is looking at an interactable within range.
           CSS opacity transition makes it fade in/out smoothly. */}
@@ -116,6 +149,120 @@ export default function Overlay({ locked, onStart }) {
       )}
     </>
   )
+}
+
+// ── StatBars sub-component ───────────────────────────────────────────────────
+//
+// Extracted as its own component so it can subscribe to game store values
+// without embedding all that logic in the already-busy Overlay function.
+// The `locked` guard is handled by the parent — StatBars always renders
+// when mounted, but it's only rendered by Overlay when locked=true.
+
+function StatBars({ health, maxHealth, stamina, maxStamina, isExhausted, metCount }) {
+  const hpPct  = Math.max(0, (health  / maxHealth)  * 100)
+  const stPct  = Math.max(0, (stamina / maxStamina) * 100)
+
+  // Health bar colour: green → orange → red as HP falls
+  const hpColor = hpPct > 50 ? '#4cce6a' : hpPct > 25 ? '#f59e0b' : '#ef4444'
+
+  // Stamina bar colour: blue normally, muted red when exhausted (sprint locked)
+  const stColor = isExhausted ? '#9b2c2c' : '#3b9eff'
+
+  return (
+    <div style={barStyles.container}>
+      {/* Health */}
+      <div style={barStyles.row}>
+        <span style={barStyles.icon}>♥</span>
+        <div style={barStyles.track}>
+          <div style={{ ...barStyles.fill, width: `${hpPct}%`, background: hpColor }} />
+        </div>
+        <span style={barStyles.value}>{Math.ceil(health)}</span>
+      </div>
+
+      {/* Stamina */}
+      <div style={barStyles.row}>
+        <span style={barStyles.icon}>⚡</span>
+        <div style={barStyles.track}>
+          <div style={{ ...barStyles.fill, width: `${stPct}%`, background: stColor }} />
+          {isExhausted && <span style={barStyles.exhaustedLabel}>EXHAUSTED</span>}
+        </div>
+        <span style={barStyles.value}>{Math.ceil(stamina)}</span>
+      </div>
+
+      {/* Met NPCs counter */}
+      {metCount > 0 && (
+        <div style={barStyles.metRow}>
+          <span style={barStyles.metText}>Met {metCount} / 3</span>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const barStyles = {
+  container: {
+    position: 'fixed',
+    top: '20px',
+    left: '20px',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: '7px',
+    pointerEvents: 'none',
+    zIndex: 10,
+    fontFamily: 'monospace',
+    userSelect: 'none',
+  },
+  row: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '7px',
+  },
+  icon: {
+    fontSize: '12px',
+    color: 'rgba(255,255,255,0.6)',
+    width: '14px',
+    textAlign: 'center',
+    flexShrink: 0,
+  },
+  track: {
+    position: 'relative',
+    width: '120px',
+    height: '7px',
+    background: 'rgba(0,0,0,0.55)',
+    borderRadius: '4px',
+    overflow: 'visible',
+    border: '1px solid rgba(255,255,255,0.12)',
+  },
+  fill: {
+    height: '100%',
+    borderRadius: '4px',
+    transition: 'width 0.15s linear, background 0.3s ease',
+  },
+  value: {
+    fontSize: '11px',
+    color: 'rgba(255,255,255,0.55)',
+    minWidth: '28px',
+    textAlign: 'right',
+  },
+  exhaustedLabel: {
+    position: 'absolute',
+    top: '-1px',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    fontSize: '8px',
+    color: '#f87171',
+    letterSpacing: '0.08em',
+    whiteSpace: 'nowrap',
+    fontFamily: 'monospace',
+  },
+  metRow: {
+    marginTop: '2px',
+  },
+  metText: {
+    fontSize: '11px',
+    color: 'rgba(136, 204, 255, 0.6)',
+    letterSpacing: '0.04em',
+  },
 }
 
 // ── Inline styles ────────────────────────────────────────────────────────────
