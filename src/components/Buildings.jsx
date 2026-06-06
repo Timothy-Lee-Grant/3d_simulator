@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import * as THREE from 'three'
 import { getTexture } from '../systems/TextureGenerator'
+import { getTerrainHeight } from '../systems/terrain'
 
 /**
  * Buildings — box structures with PBR materials and emissive windows.
@@ -175,10 +176,11 @@ function BuildingWindows({ w, h, d }) {
 
 function Building({ pos: [x, z], dims: [w, h, d], textureKey, tint }) {
   const material = useBuildingMaterial(textureKey, tint, w, h)
+  // Snap base to terrain — the centre sits at groundY + h/2 so the bottom face is flush
+  const groundY = getTerrainHeight(x, z)
 
   return (
-    // Group centers the building at (x, h/2, z) so children use local space
-    <group position={[x, h / 2, z]}>
+    <group position={[x, groundY + h / 2, z]}>
       <mesh castShadow receiveShadow material={material}>
         <boxGeometry args={[w, h, d]} />
       </mesh>

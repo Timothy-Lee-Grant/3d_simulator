@@ -34,6 +34,7 @@ import { useRef, useEffect } from 'react'
 import { useFrame } from '@react-three/fiber'
 import { useInteractionStore } from '../store/useInteractionStore'
 import { registerInteractable, deregisterInteractable } from '../systems/interactables'
+import { getTerrainHeight } from '../systems/terrain'
 import Human from './Human'
 
 // How fast the highlight ring fades in/out (fraction of gap closed per frame at 60fps)
@@ -55,6 +56,10 @@ const RING_Y         = 0.02   // just above ground, avoids z-fighting with the f
  * @param {number}               phaseOffset  Passed through to Human's idle animation
  */
 export default function NPC({ npcId, name, position = [0, 0, 0], rotation = [0, 0, 0], phaseOffset = 0 }) {
+  // Snap Y to terrain at this NPC's XZ position — the JSON stores y=0 as a placeholder
+  const groundY = getTerrainHeight(position[0], position[2])
+  const snappedPosition = [position[0], groundY, position[2]]
+
   // Root group — registered with the interactables system so the raycaster can hit it
   const rootRef  = useRef()
   // Ring mesh ref — animated opacity driven by highlight state
@@ -97,7 +102,7 @@ export default function NPC({ npcId, name, position = [0, 0, 0], rotation = [0, 
 
   return (
     // Root group — registered with interactables, raycasts will hit Human geometry inside
-    <group ref={rootRef} position={position} rotation={rotation}>
+    <group ref={rootRef} position={snappedPosition} rotation={rotation}>
 
       {/* ── Human visual (the actual character geometry + idle animation) ── */}
       {/* Position and rotation are handled by the root group above, so we

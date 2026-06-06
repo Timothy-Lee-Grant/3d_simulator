@@ -1,5 +1,6 @@
 import { useMemo } from 'react'
 import * as THREE from 'three'
+import { getTerrainHeight } from '../systems/terrain'
 
 /**
  * StreetLamps — metal lamp posts with emissive heads and point lights.
@@ -88,8 +89,9 @@ function useLampMaterials() {
 // ── Single lamp post ──────────────────────────────────────────────────────
 
 function StreetLamp({ position: [x, z], poleMat, housingMat, bulbMat }) {
+  const groundY = getTerrainHeight(x, z)
   return (
-    <group position={[x, 0, z]}>
+    <group position={[x, groundY, z]}>
 
       {/* ── Vertical pole ──────────────────────────────────────────── */}
       {/* Tapers slightly — wider at base for stability, narrower at top */}
