@@ -77,4 +77,12 @@ export const useInteractionStore = create((set) => ({
 
   /** Force-close dialogue (e.g. on ESC). */
   closeDialogue: () => set({ activeDialogue: null }),
+
+  // ── Item feedback ─────────────────────────────────────────────────────────
+  //
+  // Short text shown when the player presses F to use/inspect an item.
+  // Cleared after a timeout in Overlay.jsx.
+  itemFeedback: null,
+  setItemFeedback: (text) => set({ itemFeedback: text }),
+  clearItemFeedback: () => set({ itemFeedback: null }),
 }))

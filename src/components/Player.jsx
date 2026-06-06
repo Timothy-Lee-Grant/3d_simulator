@@ -118,6 +118,7 @@ export default function Player({ onLock, onUnlock }) {
   const setStamina       = useGameStore(state => state.setStamina)
   const savePosition     = useGameStore(state => state.savePosition)
   const equipSlot        = useGameStore(state => state.equipSlot)
+  const useItem          = useGameStore(state => state.useItem)
   const addInteractedNPC = useWorldStore(state => state.addInteractedNPC)
 
   const handleLock   = () => { isLocked.current = true;  onLock?.()   }
@@ -136,19 +137,32 @@ export default function Player({ onLock, onUnlock }) {
     }
   }, [])
 
-  // ── Inventory hotkeys (1–5) ───────────────────────────────────────────────
-  // Guarded by isLocked so slot selection can't happen at the start screen.
-  // Also guarded by activeDialogue — during dialogue the number keys drive
-  // response selection instead (handled in the dialogue listener below).
+  // ── Inventory hotkeys (1–5) and F to use ─────────────────────────────────
+  // 1–5 select slots; F uses (or inspects) the currently equipped item.
+  // Both guarded by isLocked and suppressed during dialogue.
   useEffect(() => {
     const onKeyDown = (e) => {
       if (!isLocked.current) return
+      if (useInteractionStore.getState().activeDialogue) return
+
+      // Slot selection
       const slot = parseInt(e.key, 10) - 1
-      if (slot >= 0 && slot < SLOT_COUNT) equipSlot(slot)
+      if (slot >= 0 && slot < SLOT_COUNT) {
+        equipSlot(slot)
+        return
+      }
+
+      // F — use/inspect equipped item
+      if (e.code === 'KeyF') {
+        const result = useItem()
+        if (result) {
+          useInteractionStore.getState().setItemFeedback(result.text)
+        }
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [equipSlot])
+  }, [equipSlot, useItem])
 
   // ── Dialogue keyboard navigation ──────────────────────────────────────────
   // A separate listener with no isLocked guard so it works while the mouse

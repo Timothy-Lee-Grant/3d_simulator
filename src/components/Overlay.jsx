@@ -556,6 +556,8 @@ export default function Overlay({ locked, onStart }) {
   const lookingAt        = useInteractionStore(state => state.lookingAt)
   const lastInteraction  = useInteractionStore(state => state.lastInteraction)
   const activeDialogue   = useInteractionStore(state => state.activeDialogue)
+  const itemFeedback     = useInteractionStore(state => state.itemFeedback)
+  const clearItemFeedback = useInteractionStore(state => state.clearItemFeedback)
 
   const health      = useGameStore(state => state.health)
   const maxHealth   = useGameStore(state => state.maxHealth)
@@ -568,6 +570,9 @@ export default function Overlay({ locked, onStart }) {
 
   const metCount = useWorldStore(state => state.interactedNPCs.length)
 
+  // Derived: currently selected item
+  const equippedItem = inventory[equippedSlot] ?? null
+
   // ── Interaction feedback ──────────────────────────────────────────────────
   const [feedbackMsg, setFeedbackMsg] = useState(null)
   useEffect(() => {
@@ -576,6 +581,13 @@ export default function Overlay({ locked, onStart }) {
     const t = setTimeout(() => setFeedbackMsg(null), FEEDBACK_DURATION)
     return () => clearTimeout(t)
   }, [lastInteraction])
+
+  // ── Item use feedback ─────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!itemFeedback) return
+    const t = setTimeout(() => clearItemFeedback(), 2800)
+    return () => clearTimeout(t)
+  }, [itemFeedback, clearItemFeedback])
 
   return (
     <>
@@ -592,6 +604,7 @@ export default function Overlay({ locked, onStart }) {
             <span style={sc.keyLabel}>Mouse</span>     <span style={sc.keyDesc}>Look around</span>
             <span style={sc.keyLabel}>Shift</span>     <span style={sc.keyDesc}>Sprint (drains stamina)</span>
             <span style={sc.keyLabel}>E</span>         <span style={sc.keyDesc}>Talk to NPCs</span>
+            <span style={sc.keyLabel}>F</span>         <span style={sc.keyDesc}>Use / inspect item</span>
             <span style={sc.keyLabel}>1 – 5</span>     <span style={sc.keyDesc}>Select inventory slot</span>
             <span style={sc.keyLabel}>ESC</span>       <span style={sc.keyDesc}>Pause / release mouse</span>
           </div>
@@ -647,9 +660,28 @@ export default function Overlay({ locked, onStart }) {
         <InventoryBar inventory={inventory} equippedSlot={equippedSlot} />
       )}
 
+      {/* Item description strip — shows selected item name + description above the bar */}
+      {locked && equippedItem && !activeDialogue && (
+        <div style={hud.itemInfo}>
+          <span style={hud.itemInfoName}>{equippedItem.name}</span>
+          <span style={hud.itemInfoDesc}>{equippedItem.description}</span>
+          {equippedItem.type === 'consumable' && (
+            <span style={hud.itemInfoUse}>[F] Use</span>
+          )}
+          {equippedItem.type !== 'consumable' && (
+            <span style={hud.itemInfoUse}>[F] Inspect</span>
+          )}
+        </div>
+      )}
+
+      {/* Item use / inspect feedback */}
+      {locked && itemFeedback && !activeDialogue && (
+        <div style={hud.itemFeedback}>{itemFeedback}</div>
+      )}
+
       {locked && (
         <div style={hud.hints}>
-          WASD · Move &nbsp;|&nbsp; Space · Jump &nbsp;|&nbsp; Shift · Sprint &nbsp;|&nbsp; E · Talk &nbsp;|&nbsp; 1–5 · Slot &nbsp;|&nbsp; ESC · Pause
+          WASD · Move &nbsp;|&nbsp; Space · Jump &nbsp;|&nbsp; Shift · Sprint &nbsp;|&nbsp; E · Talk &nbsp;|&nbsp; F · Use &nbsp;|&nbsp; 1–5 · Slot &nbsp;|&nbsp; ESC · Pause
         </div>
       )}
 
@@ -800,6 +832,58 @@ const hud = {
     pointerEvents: 'none',
     zIndex:        10,
     fontFamily:    'monospace',
+    whiteSpace:    'nowrap',
+  },
+
+  // ── Item info strip (above inventory bar) ─────────────────────────────────
+  itemInfo: {
+    position:      'fixed',
+    bottom:        116,   // sits just above the inventory bar (54px slots + 54px gap + 8px)
+    left:          '50%',
+    transform:     'translateX(-50%)',
+    display:       'flex',
+    alignItems:    'baseline',
+    gap:           10,
+    pointerEvents: 'none',
+    zIndex:        10,
+    fontFamily:    'monospace',
+    userSelect:    'none',
+    background:    'rgba(0,0,0,0.45)',
+    padding:       '4px 12px',
+    borderRadius:  4,
+    border:        '1px solid rgba(255,255,255,0.08)',
+  },
+  itemInfoName: {
+    fontSize:      12,
+    color:         'rgba(255,255,255,0.9)',
+    fontWeight:    'bold',
+    letterSpacing: '0.03em',
+  },
+  itemInfoDesc: {
+    fontSize:      11,
+    color:         'rgba(255,255,255,0.45)',
+    fontStyle:     'italic',
+  },
+  itemInfoUse: {
+    fontSize:      10,
+    color:         'rgba(100,200,255,0.65)',
+    letterSpacing: '0.04em',
+    marginLeft:    4,
+  },
+
+  // ── Item use / inspect feedback (center screen) ───────────────────────────
+  itemFeedback: {
+    position:      'fixed',
+    top:           '40%',
+    left:          '50%',
+    transform:     'translateX(-50%)',
+    color:         '#86efac',   // soft green — positive feedback
+    fontSize:      15,
+    fontFamily:    'monospace',
+    letterSpacing: '0.05em',
+    textShadow:    '0 1px 8px rgba(0,0,0,1)',
+    pointerEvents: 'none',
+    zIndex:        10,
     whiteSpace:    'nowrap',
   },
 }

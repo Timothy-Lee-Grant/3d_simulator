@@ -99,6 +99,35 @@ export const useGameStore = create((set, get) => ({
     inventory: state.inventory.filter(i => i.id !== itemId),
   })),
 
+  // ── Item use ──────────────────────────────────────────────────────────────
+  //
+  // Returns a result string describing what happened, so the HUD can display
+  // feedback. Consumable items (type: 'consumable') are removed after use.
+  // Quest/tool items show a description instead.
+  //
+  // Item types:
+  //   'consumable' — used up on F press (e.g. Healing Herb)
+  //   'key'        — quest item, inspectable only
+  //   'tool'       — inspectable, kept after use
+  useItem: () => {
+    const state = get()
+    const item  = state.inventory[state.equippedSlot]
+    if (!item) return null
+
+    if (item.type === 'consumable') {
+      const healed = Math.min(item.healAmount ?? 30, state.maxHealth - state.health)
+      if (healed <= 0) return { text: 'Already at full health.', consumed: false }
+      set(s => ({
+        health:    Math.min(s.maxHealth, s.health + (item.healAmount ?? 30)),
+        inventory: s.inventory.filter(i => i.id !== item.id),
+      }))
+      return { text: `Used ${item.name}. +${healed} HP`, consumed: true }
+    }
+
+    // Non-consumable: just show the description
+    return { text: item.description, consumed: false }
+  },
+
   // ── Quick bar slot selection ──────────────────────────────────────────────
   //
   // Slots 0–4 (displayed as 1–5 in the HUD).

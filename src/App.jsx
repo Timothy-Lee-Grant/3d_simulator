@@ -79,9 +79,9 @@ export default function App() {
   // Phase 3.5 will replace this with items placed in the scene world.
   useEffect(() => {
     const { pickUpItem } = useGameStore.getState()
-    pickUpItem({ id: 'item_key',  name: 'Ancient Key',  color: '#f59e0b', description: 'A heavy iron key of unknown origin.' })
-    pickUpItem({ id: 'item_map',  name: 'Old Map',      color: '#84cc16', description: 'A tattered map of a nameless settlement.' })
-    pickUpItem({ id: 'item_herb', name: 'Healing Herb', color: '#22c55e', description: 'Smells of pine. Restores health when used.' })
+    pickUpItem({ id: 'item_key',  name: 'Ancient Key',  type: 'key',        color: '#f59e0b', description: 'A heavy iron key of unknown origin. It opens something — but what?' })
+    pickUpItem({ id: 'item_map',  name: 'Old Map',      type: 'tool',       color: '#84cc16', description: 'A tattered map of a nameless settlement. The landmarks have faded.' })
+    pickUpItem({ id: 'item_herb', name: 'Healing Herb', type: 'consumable', color: '#22c55e', description: 'Smells of pine. Press F to use — restores 30 HP.', healAmount: 30 })
   }, [])
 
   const handleReady = useCallback((fn) => {
