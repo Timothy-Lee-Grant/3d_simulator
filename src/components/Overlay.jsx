@@ -4,13 +4,48 @@
  * This is a regular React/DOM component, not a Three.js object.
  * It sits outside the Canvas and layers over the WebGL output via CSS.
  *
- * The crosshair and HUD are always visible once the game starts.
- * The start panel is shown only when the pointer is not locked.
+ * ── What's new in 3.1 ─────────────────────────────────────────────────────
+ *
+ * Two new HUD elements driven by the interaction store:
+ *
+ *   INTERACTION PROMPT — appears when the player looks at an NPC within range.
+ *     Shows "[ E ]  Inspect <name>" just above the crosshair.
+ *     Fades in/out with a CSS transition so it doesn't pop harshly.
+ *
+ *   INTERACTION FEEDBACK — a brief message that appears when the player presses E.
+ *     Shows "You greeted <name>" for 2 seconds, then disappears.
+ *     Implemented with a useEffect that clears after a timeout.
+ *
+ * Both elements read from useInteractionStore — the same store that the raycaster
+ * and Player component write to. No prop threading required.
  */
+
+import { useState, useEffect } from 'react'
+import { useInteractionStore } from '../store/useInteractionStore'
+
+// How long the interaction feedback message stays on screen (ms)
+const FEEDBACK_DURATION = 2000
+
 export default function Overlay({ locked, onStart }) {
+  // ── Read interaction state ────────────────────────────────────────────────
+  const lookingAt        = useInteractionStore(state => state.lookingAt)
+  const lastInteraction  = useInteractionStore(state => state.lastInteraction)
+
+  // ── Feedback message (shown briefly after pressing E) ────────────────────
+  const [feedbackMsg, setFeedbackMsg] = useState(null)
+
+  useEffect(() => {
+    if (!lastInteraction) return
+
+    setFeedbackMsg(`You greeted ${lastInteraction.name}`)
+
+    const timer = setTimeout(() => setFeedbackMsg(null), FEEDBACK_DURATION)
+    return () => clearTimeout(timer)
+  }, [lastInteraction])
+
   return (
     <>
-      {/* ── Start panel (shown when not locked) ──────────────────── */}
+      {/* ── Start panel (shown when not locked) ──────────────────────── */}
       {!locked && (
         <div onClick={onStart} style={styles.overlay}>
           <h1 style={styles.title}>3D Explorer</h1>
@@ -23,6 +58,8 @@ export default function Overlay({ locked, onStart }) {
             <span style={styles.keyDesc}>Look around</span>
             <span style={styles.keyLabel}>Shift</span>
             <span style={styles.keyDesc}>Sprint</span>
+            <span style={styles.keyLabel}>E</span>
+            <span style={styles.keyDesc}>Interact</span>
             <span style={styles.keyLabel}>ESC</span>
             <span style={styles.keyDesc}>Pause</span>
           </div>
@@ -34,20 +71,54 @@ export default function Overlay({ locked, onStart }) {
         </div>
       )}
 
-      {/* ── Crosshair (always shown while locked) ────────────────── */}
-      {locked && <div style={styles.crosshairWrap}><div style={styles.crosshair} /></div>}
+      {/* ── Crosshair (always shown while locked) ────────────────────── */}
+      {locked && (
+        <div style={styles.crosshairWrap}>
+          <div style={{
+            ...styles.crosshairH,
+            background: lookingAt ? 'rgba(136, 204, 255, 0.9)' : 'rgba(255,255,255,0.85)',
+          }} />
+          <div style={{
+            ...styles.crosshairV,
+            background: lookingAt ? 'rgba(136, 204, 255, 0.9)' : 'rgba(255,255,255,0.85)',
+          }} />
+        </div>
+      )}
 
-      {/* ── HUD hint bar ─────────────────────────────────────────── */}
+      {/* ── Interaction prompt ────────────────────────────────────────── */}
+      {/* Shown when the player is looking at an interactable within range.
+          CSS opacity transition makes it fade in/out smoothly. */}
+      {locked && (
+        <div style={{
+          ...styles.interactPrompt,
+          opacity: lookingAt ? 1 : 0,
+          transform: lookingAt
+            ? 'translate(-50%, 0)'
+            : 'translate(-50%, 6px)',
+        }}>
+          <span style={styles.keyBadge}>E</span>
+          &nbsp;&nbsp;Inspect{lookingAt ? ` ${lookingAt.name}` : ''}
+        </div>
+      )}
+
+      {/* ── Interaction feedback ──────────────────────────────────────── */}
+      {locked && feedbackMsg && (
+        <div style={styles.feedback}>
+          {feedbackMsg}
+        </div>
+      )}
+
+      {/* ── HUD hint bar ──────────────────────────────────────────────── */}
       {locked && (
         <div style={styles.hud}>
-          W A S D · Move &nbsp;|&nbsp; Mouse · Look &nbsp;|&nbsp; Shift · Sprint &nbsp;|&nbsp; ESC · Pause
+          W A S D · Move &nbsp;|&nbsp; Mouse · Look &nbsp;|&nbsp; Shift · Sprint &nbsp;|&nbsp; E · Interact &nbsp;|&nbsp; ESC · Pause
         </div>
       )}
     </>
   )
 }
 
-// ── Inline styles (no extra CSS file needed for a few rules) ────────────
+// ── Inline styles ────────────────────────────────────────────────────────────
 
 const styles = {
   overlay: {
@@ -97,22 +168,6 @@ const styles = {
     fontSize: '15px',
     letterSpacing: '0.05em',
   },
-  crosshairWrap: {
-    position: 'fixed',
-    top: '50%',
-    left: '50%',
-    transform: 'translate(-50%,-50%)',
-    width: '24px',
-    height: '24px',
-    pointerEvents: 'none',
-    zIndex: 10,
-  },
-  crosshair: {
-    position: 'relative',
-    width: '100%',
-    height: '100%',
-    // drawn via ::before / ::after would need a className — use a Box approach instead
-  },
   escNote: {
     marginTop: '10px',
     fontSize: '12px',
@@ -121,6 +176,87 @@ const styles = {
     maxWidth: '300px',
     lineHeight: '1.5',
   },
+
+  // ── Crosshair ─────────────────────────────────────────────────────────────
+  crosshairWrap: {
+    position: 'fixed',
+    top: '50%',
+    left: '50%',
+    transform: 'translate(-50%,-50%)',
+    width: '20px',
+    height: '20px',
+    pointerEvents: 'none',
+    zIndex: 10,
+  },
+  // Horizontal bar of the crosshair
+  crosshairH: {
+    position: 'absolute',
+    top: '50%',
+    left: 0,
+    right: 0,
+    height: '2px',
+    transform: 'translateY(-50%)',
+    transition: 'background 0.15s ease',
+  },
+  // Vertical bar of the crosshair
+  crosshairV: {
+    position: 'absolute',
+    left: '50%',
+    top: 0,
+    bottom: 0,
+    width: '2px',
+    transform: 'translateX(-50%)',
+    transition: 'background 0.15s ease',
+  },
+
+  // ── Interaction prompt ────────────────────────────────────────────────────
+  interactPrompt: {
+    position: 'fixed',
+    top: 'calc(50% - 36px)',   // just above the crosshair
+    left: '50%',
+    transform: 'translate(-50%, 0)',
+    color: '#fff',
+    fontSize: '14px',
+    fontFamily: 'monospace',
+    letterSpacing: '0.04em',
+    textShadow: '0 1px 6px rgba(0,0,0,0.95)',
+    pointerEvents: 'none',
+    zIndex: 10,
+    whiteSpace: 'nowrap',
+    transition: 'opacity 0.2s ease, transform 0.2s ease',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+  },
+  keyBadge: {
+    display: 'inline-block',
+    padding: '1px 7px',
+    border: '1.5px solid rgba(255,255,255,0.7)',
+    borderRadius: '4px',
+    fontSize: '12px',
+    color: '#fff',
+    background: 'rgba(0,0,0,0.5)',
+    lineHeight: '1.6',
+  },
+
+  // ── Interaction feedback ──────────────────────────────────────────────────
+  feedback: {
+    position: 'fixed',
+    top: '38%',
+    left: '50%',
+    transform: 'translateX(-50%)',
+    color: 'rgba(136, 204, 255, 0.95)',
+    fontSize: '15px',
+    fontFamily: 'monospace',
+    letterSpacing: '0.05em',
+    textShadow: '0 1px 8px rgba(0,0,0,1)',
+    pointerEvents: 'none',
+    zIndex: 10,
+    whiteSpace: 'nowrap',
+    animation: 'fadeInUp 0.25s ease',
+  },
+
+  // ── HUD hint bar ──────────────────────────────────────────────────────────
   hud: {
     position: 'fixed',
     bottom: '24px',

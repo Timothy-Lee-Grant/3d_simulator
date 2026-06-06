@@ -9,7 +9,7 @@ import Buildings      from './components/Buildings'
 import Trees          from './components/Trees'
 import Rocks          from './components/Rocks'
 import Landmark       from './components/Landmark'
-import Human          from './components/Human'
+import NPC            from './components/NPC'
 import StreetLamps    from './components/StreetLamps'
 import Particles      from './components/Particles'
 import PostProcessing from './components/PostProcessing'
@@ -127,12 +127,13 @@ export default function App() {
         <Landmark />
         <StreetLamps />
 
-        {/* ── Characters ────────────────────────────────────────────── */}
-        {/* Each human gets a different phaseOffset so their idle cycles
-            are staggered — they won't all inhale and sway in unison */}
-        <Human position={[0,   0, -5]} rotation={[0, Math.PI,       0]} phaseOffset={0.0} />
-        <Human position={[2.5, 0, -7]} rotation={[0, Math.PI * 1.3, 0]} phaseOffset={2.1} />
-        <Human position={[-2,  0, -6]} rotation={[0, Math.PI * 0.8, 0]} phaseOffset={4.7} />
+        {/* ── NPCs (interactable characters) ────────────────────────── */}
+        {/* Each NPC wraps a Human with a unique id and display name.
+            The raycaster in Player.jsx tests against these groups.
+            phaseOffset staggers idle animation so they don't sync up. */}
+        <NPC npcId="npc_01" name="The Stranger"   position={[0,   0, -5]} rotation={[0, Math.PI,       0]} phaseOffset={0.0} />
+        <NPC npcId="npc_02" name="The Wanderer"   position={[2.5, 0, -7]} rotation={[0, Math.PI * 1.3, 0]} phaseOffset={2.1} />
+        <NPC npcId="npc_03" name="The Gatekeeper" position={[-2,  0, -6]} rotation={[0, Math.PI * 0.8, 0]} phaseOffset={4.7} />
 
         {/* ── Particles ─────────────────────────────────────────────── */}
         {/* Ambient dust motes (BufferGeometry points, CPU-animated) and

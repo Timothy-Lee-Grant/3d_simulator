@@ -3,7 +3,9 @@ import { useFrame, useThree } from '@react-three/fiber'
 import { PointerLockControls } from '@react-three/drei'
 import { Vector3 } from 'three'
 import useKeyboard from '../hooks/useKeyboard'
+import useRaycast from '../hooks/useRaycast'
 import { playFootstep } from '../systems/AudioManager'
+import { useInteractionStore } from '../store/useInteractionStore'
 
 const WALK_SPEED  = 7.0
 const SPRINT_SPEED = 14.0
@@ -28,6 +30,18 @@ export default function Player({ onLock, onUnlock }) {
   const isLocked  = useRef(false)
   const moveDir   = useRef(new Vector3())
   const bobTime   = useRef(0)
+
+  // ── Interaction ───────────────────────────────────────────────────────────
+  // useRaycast fires a forward ray from the camera center every frame and writes
+  // the closest interactable (within INTERACTION_RANGE) to the store.
+  useRaycast()
+
+  const lookingAt = useInteractionStore(state => state.lookingAt)
+  const interact  = useInteractionStore(state => state.interact)
+
+  // Track whether E was already pressed this frame to avoid repeat-fires.
+  // useRef is used (not useState) so the check doesn't trigger re-renders.
+  const ePressedLastFrame = useRef(false)
 
   // ── Footstep state ────────────────────────────────────────────────────
   // We detect footsteps by watching the sign of Math.sin(bobTime).
@@ -74,6 +88,16 @@ export default function Player({ onLock, onUnlock }) {
     const left   = (keys.current['KeyA'] || keys.current['ArrowLeft'])  ? 1 : 0
     const right  = (keys.current['KeyD'] || keys.current['ArrowRight']) ? 1 : 0
     const sprint = keys.current['ShiftLeft'] || keys.current['ShiftRight']
+    const eDown  = keys.current['KeyE']
+
+    // ── Interaction: press E while looking at a target ────────────────
+    // Edge-detect the E key (only fire once per press, not every frame).
+    // `lookingAt` is written by useRaycast above; if it's non-null, the
+    // player is looking at something within reach.
+    if (eDown && !ePressedLastFrame.current && lookingAt) {
+      interact(lookingAt)
+    }
+    ePressedLastFrame.current = !!eDown
 
     // ── Translate in camera-local space ───────────────────────────────
     moveDir.current.set(right - left, 0, back - fwd)
