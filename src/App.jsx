@@ -24,6 +24,11 @@ import InstancedForest from './components/InstancedForest' // 6.3 — 50 trees, 
 import InstancedRocks  from './components/InstancedRocks'  // 6.3 — 30 rocks, 1 draw call
 import GlowOrbs        from './components/GlowOrb'         // 6.4 — custom fresnel shader
 import GrassField      from './components/GrassField'      // 6.4 — wind vertex shader + instancing
+// ── Phase 7 additions ─────────────────────────────────────────────────────
+import LODTrees        from './components/LODTrees'        // 7.3 — THREE.LOD with billboard sprites
+import DebugPanel      from './components/DebugPanel'      // 7.4 — dev-only runtime controls
+import { useDebugStore } from './store/useDebugStore'      // 7.4 — runtime-tunable values
+import { loadGame, applyLoadedGame, saveGame } from './systems/saveLoad' // 7.2 — persistence
 
 /**
  * App — root component. Canvas setup, pointer-lock wiring, scene assembly.
@@ -50,9 +55,23 @@ import GrassField      from './components/GrassField'      // 6.4 — wind verte
  *
  * Surfaces requestPointerLock() from inside Canvas to the App level.
  *
+ * ── Phase 7 changes ───────────────────────────────────────────────────────
+ *
+ * 1. LODTrees (7.3): THREE.LOD cluster — 4 detail levels + billboard sprites.
+ *
+ * 2. Save / Load (7.2): loadGame() on mount; auto-save every 30s while locked.
+ *    Starter items only given on first play (no save file found).
+ *
+ * 3. FogSync (7.4): inner Canvas component — applies debug fog density to
+ *    scene.fog.density each frame and processes camera teleports from DebugPanel.
+ *
+ * 4. DebugPanel (7.4): dev-only DOM panel (` key). Rendered outside Canvas.
+ *    grassVisible toggle from useDebugStore gates GrassField rendering.
+ *
  * ── CameraSync ────────────────────────────────────────────────────────────
  *
  * Throttled (20Hz) bridge: camera.rotation.y → Zustand store → DOM compass.
+ * Also saves camera position every 2 s for save/load persistence.
  */
 
 function LockBridge({ onReady }) {
@@ -68,13 +87,43 @@ function LockBridge({ onReady }) {
 function CameraSync() {
   const { camera }   = useThree()
   const setCameraYaw = useGameStore(state => state.setCameraYaw)
+  const savePosition = useGameStore(state => state.savePosition)
   const accumRef     = useRef(0)
+  const posAccRef    = useRef(0)
 
   useFrame((_, delta) => {
     accumRef.current += delta
     if (accumRef.current >= 0.05) {
       setCameraYaw(camera.rotation.y)
       accumRef.current = 0
+    }
+    posAccRef.current += delta
+    if (posAccRef.current >= 2) {
+      savePosition({ x: camera.position.x, y: camera.position.y, z: camera.position.z })
+      posAccRef.current = 0
+    }
+  })
+
+  return null
+}
+
+// ── FogSync ───────────────────────────────────────────────────────────────────
+//
+// Runs inside Canvas so it has access to scene and camera.
+// 1. Applies debug store fogDensity to scene.fog.density every frame.
+// 2. Processes camera teleports queued by DebugPanel via teleportRef.
+
+function FogSync({ teleportRef }) {
+  const { scene, camera } = useThree()
+
+  useFrame(() => {
+    if (scene.fog) {
+      scene.fog.density = useDebugStore.getState().fogDensity
+    }
+    if (teleportRef.current) {
+      const { x, y, z } = teleportRef.current
+      camera.position.set(x, y, z)
+      teleportRef.current = null
     }
   })
 
@@ -83,19 +132,38 @@ function CameraSync() {
 
 export default function App() {
   const [locked, setLocked] = useState(false)
-  const lockFn = useRef(null)
+  const lockFn     = useRef(null)
+  const teleportRef = useRef(null)
 
   useAudio(locked)
 
+  // ── Grassfield visibility toggle from debug store ────────────────────────
+  const grassVisible = useDebugStore(s => s.grassVisible)
+
+  // ── On mount: load save or give starter items ────────────────────────────
   useEffect(() => {
-    const { pickUpItem } = useGameStore.getState()
-    pickUpItem({ id: 'item_key',  name: 'Ancient Key',  type: 'key',        color: '#f59e0b', description: 'A heavy iron key of unknown origin. It opens something — but what?' })
-    pickUpItem({ id: 'item_map',  name: 'Old Map',      type: 'tool',       color: '#84cc16', description: 'A tattered map of a nameless settlement. The landmarks have faded.' })
-    pickUpItem({ id: 'item_herb', name: 'Healing Herb', type: 'consumable', color: '#22c55e', description: 'Smells of pine. Press F to use — restores 30 HP.', healAmount: 30 })
+    const saved = loadGame()
+    if (saved) {
+      const { spawnPosition } = applyLoadedGame(saved)
+      if (spawnPosition) teleportRef.current = spawnPosition
+    } else {
+      const { pickUpItem } = useGameStore.getState()
+      pickUpItem({ id: 'item_key',  name: 'Ancient Key',  type: 'key',        color: '#f59e0b', description: 'A heavy iron key of unknown origin. It opens something — but what?' })
+      pickUpItem({ id: 'item_map',  name: 'Old Map',      type: 'tool',       color: '#84cc16', description: 'A tattered map of a nameless settlement. The landmarks have faded.' })
+      pickUpItem({ id: 'item_herb', name: 'Healing Herb', type: 'consumable', color: '#22c55e', description: 'Smells of pine. Press F to use — restores 30 HP.', healAmount: 30 })
+    }
   }, [])
 
-  const handleReady = useCallback((fn) => { lockFn.current = fn }, [])
-  const handleStart = () => lockFn.current?.()
+  // ── Auto-save every 30 s while pointer is locked ─────────────────────────
+  useEffect(() => {
+    if (!locked) return
+    const id = setInterval(() => saveGame(), 30_000)
+    return () => clearInterval(id)
+  }, [locked])
+
+  const handleReady    = useCallback((fn) => { lockFn.current = fn }, [])
+  const handleStart    = () => lockFn.current?.()
+  const handleTeleport = useCallback((pos) => { teleportRef.current = pos }, [])
 
   return (
     <>
@@ -155,6 +223,14 @@ export default function App() {
         */}
         <InstancedForest />
 
+        {/* ── Phase 7.3: LOD Trees ──────────────────────────────────── */}
+        {/*
+          LODTrees: 8 trees using THREE.LOD — 4 detail levels including
+          billboard sprites at >70 units. Demonstrates the LOD pattern
+          alongside the instanced forest (different technique trade-offs).
+        */}
+        <LODTrees />
+
         {/*
           InstancedRocks: 30 rocks in 1 draw call (was 5).
           Static instance matrices — rocks don't move.
@@ -179,8 +255,9 @@ export default function App() {
           GrassField: 2,000 instanced grass blades.
           Wind displacement runs entirely in the vertex shader — zero CPU
           work per frame after initial setup.
+          Toggled by grassVisible in useDebugStore (DebugPanel slider).
         */}
-        <GrassField />
+        {grassVisible && <GrassField />}
 
         {/* ── Particles ─────────────────────────────────────────────── */}
         <Particles />
@@ -193,11 +270,16 @@ export default function App() {
         <CameraSync />
         {/* AudioBridge: updates Web Audio listener position/orientation each frame */}
         <AudioBridge />
+        {/* FogSync: applies debug fog density + processes camera teleports */}
+        <FogSync teleportRef={teleportRef} />
         <Stats />
       </Canvas>
 
       {/* ── DOM overlay (start screen + HUD) ─────────────────────────── */}
       <Overlay locked={locked} onStart={handleStart} />
+
+      {/* ── Phase 7.4: Debug panel — dev only, outside Canvas ────────── */}
+      {import.meta.env.DEV && <DebugPanel onTeleport={handleTeleport} />}
     </>
   )
 }

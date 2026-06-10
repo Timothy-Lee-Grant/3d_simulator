@@ -53,6 +53,8 @@ import { useWorldStore }       from '../store/useWorldStore'
 import { DIALOGUE }            from '../data/dialogue'
 import { requestLock }         from '../systems/pointerLock'
 import { playUIClick, playDialogueOpen, playItemPickup } from '../systems/AudioManager'
+import { saveGame, loadGame, applyLoadedGame, hasSave, getSaveTimestamp } from '../systems/saveLoad' // Phase 7.2
+import Minimap from './Minimap' // Phase 7.1
 
 const FEEDBACK_DURATION = 2200   // ms before interaction message fades
 const COMPASS_WIDTH     = 200    // px — visible window of the compass strip
@@ -550,6 +552,66 @@ const dlg = {
   },
 }
 
+// ── Save / Load buttons (Phase 7.2) ──────────────────────────────────────────
+
+function SaveLoadButtons() {
+  const [msg, setMsg] = useState(null)
+
+  const flash = (text) => {
+    setMsg(text)
+    setTimeout(() => setMsg(null), 2000)
+  }
+
+  const handleSave = () => {
+    saveGame()
+    flash(`Saved — ${getSaveTimestamp()}`)
+  }
+
+  const handleLoad = () => {
+    const data = loadGame()
+    if (!data) { flash('No save found'); return }
+    applyLoadedGame(data)
+    flash('Loaded')
+  }
+
+  return (
+    <div style={sl.wrap}>
+      {msg && <div style={sl.note}>{msg}</div>}
+      <button style={sl.btn} onClick={handleSave}>SAVE</button>
+      <button style={sl.btn} onClick={handleLoad}>LOAD</button>
+    </div>
+  )
+}
+
+const sl = {
+  wrap: {
+    position:      'fixed',
+    bottom:        18,
+    right:         18,
+    display:       'flex',
+    flexDirection: 'column',
+    alignItems:    'flex-end',
+    gap:           4,
+    zIndex:        10,
+    fontFamily:    'monospace',
+  },
+  btn: {
+    padding:      '4px 12px',
+    background:   'rgba(0,0,0,0.55)',
+    border:       '1px solid rgba(255,255,255,0.18)',
+    borderRadius: 4,
+    color:        'rgba(255,255,255,0.6)',
+    fontSize:     11,
+    letterSpacing:'0.06em',
+    cursor:       'pointer',
+  },
+  note: {
+    fontSize:  10,
+    color:     '#86efac',
+    textAlign: 'right',
+  },
+}
+
 // ── Main Overlay export ───────────────────────────────────────────────────────
 
 export default function Overlay({ locked, onStart }) {
@@ -599,6 +661,12 @@ export default function Overlay({ locked, onStart }) {
           <h1 style={sc.title}>3D Explorer</h1>
           <p style={sc.sub}>A first-person world — React Three Fiber</p>
 
+          {hasSave() && (
+            <p style={sc.saveInfo}>
+              ↩ Save found — {getSaveTimestamp()} — will auto-load on start
+            </p>
+          )}
+
           <div style={sc.keyGrid}>
             <span style={sc.keyLabel}>W A S D</span>  <span style={sc.keyDesc}>Move</span>
             <span style={sc.keyLabel}>Space</span>     <span style={sc.keyDesc}>Jump</span>
@@ -608,6 +676,8 @@ export default function Overlay({ locked, onStart }) {
             <span style={sc.keyLabel}>F</span>         <span style={sc.keyDesc}>Use / inspect item</span>
             <span style={sc.keyLabel}>1 – 5</span>     <span style={sc.keyDesc}>Select inventory slot</span>
             <span style={sc.keyLabel}>ESC</span>       <span style={sc.keyDesc}>Pause / release mouse</span>
+            {import.meta.env.DEV && <span style={sc.keyLabel}>`</span>}
+            {import.meta.env.DEV && <span style={sc.keyDesc}>Debug panel</span>}
           </div>
 
           <div style={sc.cta}>Click anywhere to start</div>
@@ -620,6 +690,9 @@ export default function Overlay({ locked, onStart }) {
       {/* ── HUD (only shown while pointer-locked) ────────────────────── */}
 
       {locked && <Compass yaw={cameraYaw} />}
+
+      {/* ── Phase 7.1: Minimap ───────────────────────────────────────── */}
+      <Minimap visible={locked && !activeDialogue} />
 
       {locked && (
         <StatBars
@@ -686,6 +759,9 @@ export default function Overlay({ locked, onStart }) {
         </div>
       )}
 
+      {/* ── Phase 7.2: Save / Load buttons ───────────────────────────── */}
+      {locked && !activeDialogue && <SaveLoadButtons />}
+
       {/* ── Dialogue panel (3.4) — renders regardless of lock state ─── */}
       {activeDialogue && <DialoguePanel activeDialogue={activeDialogue} />}
     </>
@@ -746,6 +822,12 @@ const sc = {
     maxWidth:   320,
     lineHeight: 1.5,
     margin:     0,
+  },
+  saveInfo: {
+    fontSize:  12,
+    color:     '#86efac',
+    margin:    0,
+    textAlign: 'center',
   },
 }
 
